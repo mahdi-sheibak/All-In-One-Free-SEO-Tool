@@ -86,14 +86,16 @@ function sentInit() {
 
 beforeEach(() => {
   fetchMock = vi.fn();
+  const okBody = { choices: [{ message: { content: "Connected." } }] };
   fetchMock.mockResolvedValue({
     ok: true,
     status: 200,
     statusText: "",
-    json: async () => ({
-      choices: [{ message: { content: "Connected." } }],
-    }),
-    text: async () => "",
+    // Mirror a real Response: text() returns the serialized body, so
+    // the probe's text-first JSON.parse sees the same bytes a real
+    // gateway sends (an empty text body must fail parsing, not pass).
+    json: async () => okBody,
+    text: async () => JSON.stringify(okBody),
   });
   vi.stubGlobal("fetch", fetchMock);
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -113,6 +115,56 @@ describe("test-provider route, custom branch", () => {
     );
     const body = JSON.parse(sentInit().body ?? "{}");
     expect(body.model).toBe("m1");
+  });
+
+  it("requests a non-streaming reply (stream:false) from the endpoint", async () => {
+    // Servers that stream by default answer 200 with SSE/NDJSON bodies
+    // that no JSON parser accepts; the probe must pin streaming off so
+    // a passing Test means real dispatch (which also sends stream:false)
+    // will behave the same way.
+    await post("custom:keyed");
+    const body = JSON.parse(sentInit().body ?? "{}");
+    expect(body.stream).toBe(false);
+  });
+
+  it("reports a 200 non-JSON reply with the body prefix, not a parser error", async () => {
+    // Regression: a gateway that answers 200 with concatenated JSON
+    // objects used to surface V8's "Unexpected non-whitespace character
+    // after JSON at position 790" — true but useless. The error must
+    // show what actually came back so the misbehaving server is
+    // diagnosable from the Test button alone.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "",
+      text: async () =>
+        '{"choices":[{"message":{"content":"Connected."}}]}{"trailing":true}',
+      json: async () => {
+        throw new Error("res.json() must not be reached");
+      },
+    });
+    const res = await post("custom:keyed");
+    const json = (await res.json()) as { ok: boolean; error?: string };
+    expect(json.ok).toBe(false);
+    expect(json.error).toContain("non-JSON body");
+    expect(json.error).toContain('"trailing":true');
+  });
+
+  it("reports an SSE streaming reply as such, not as a JSON failure", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "",
+      text: async () =>
+        'data: {"choices":[{"delta":{"content":"Con"}}]}\n\ndata: [DONE]\n\n',
+      json: async () => {
+        throw new Error("res.json() must not be reached");
+      },
+    });
+    const res = await post("custom:keyed");
+    const json = (await res.json()) as { ok: boolean; error?: string };
+    expect(json.ok).toBe(false);
+    expect(json.error).toContain("streaming body");
   });
 
   it("sends no auth header for a keyless custom endpoint", async () => {

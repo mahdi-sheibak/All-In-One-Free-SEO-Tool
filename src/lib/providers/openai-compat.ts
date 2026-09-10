@@ -125,6 +125,12 @@ async function dispatchOpenAICompat(
         messages,
         max_tokens: opts.maxTokens,
         temperature: opts.temperature,
+        // Some self-hosted OpenAI-compatible servers (certain llama.cpp
+        // / custom gateway builds) stream by default when `stream` is
+        // omitted, answering 200 with SSE `data:` lines or concatenated
+        // JSON chunks. Pin it off so the reply is one JSON object, the
+        // shape every parser below expects.
+        stream: false,
       }),
     });
     if (!res.ok) {
@@ -134,9 +140,29 @@ async function dispatchOpenAICompat(
       );
       return { ok: false, status: res.status, body: errBody || res.statusText };
     }
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
+    // Text-first parse instead of res.json(): a 200 whose body is not
+    // a single JSON document (server ignored stream:false and answered
+    // SSE, or a proxy concatenated/duplicated the body) used to die
+    // with V8's cryptic "Unexpected non-whitespace character after
+    // JSON at position N" — which told the user nothing about their
+    // gateway. Reporting the body prefix instead shows WHAT came back.
+    const raw = await res.text();
+    let data: { choices?: { message?: { content?: string } }[] };
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      const head = raw.trim().slice(0, 200) || "(empty body)";
+      console.error(
+        `[${opts.caller ?? "openai-compat"}] ${opts.model} 200 but not JSON: ${head}`,
+      );
+      return {
+        // 0 = retryable, same class as a truncated network response —
+        // a body that got mangled once may succeed on a second try.
+        ok: false,
+        status: 0,
+        body: `Endpoint replied 200 with a non-JSON body. First 200 chars: ${head}`,
+      };
+    }
     return {
       ok: true,
       text: data.choices?.[0]?.message?.content?.trim() || null,

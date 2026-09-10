@@ -124,6 +124,18 @@ async function probeOpenAICompat(opts: {
   extraHeaders?: Record<string, string>;
 }): Promise<ProbeResult> {
   try {
+    // Scheme re-check at the fetch site (defense in depth): the save
+    // action already enforces http(s) via normalizeBaseUrl, but this
+    // URL lives in a settings row — a hand-edited DB or a future
+    // writer bypassing normalizeBaseUrl must not turn the probe into
+    // a non-http fetch. No host allowlist by design: custom endpoints
+    // are admin-supplied config in a single-user local-first app
+    // (see custom-providers.ts "SSRF stance"), same trust class as
+    // the Ollama URL.
+    const scheme = new URL(opts.endpoint).protocol;
+    if (scheme !== "http:" && scheme !== "https:") {
+      return { ok: false, error: `Endpoint must be http(s), got "${scheme}".` };
+    }
     const res = await fetch(opts.endpoint, {
       method: "POST",
       headers: {
@@ -138,19 +150,59 @@ async function probeOpenAICompat(opts: {
         messages: [{ role: "user", content: "Say: Connected." }],
         max_tokens: 30,
         temperature: 0,
+        // Some OpenAI-compatible servers (a few llama.cpp / custom
+        // gateway builds) stream by default when `stream` is omitted,
+        // answering 200 + `data: {...}` lines that res.json() can't
+        // parse. Pin it off — the probe expects a single JSON object.
+        stream: false,
       }),
-      signal: AbortSignal.timeout(15_000),
+      // 30s, not 15s: real AI calls via ai-call.ts allow 60s, and
+      // self-hosted / free-tier gateways (Ollama cold model loads,
+      // proxy routers queueing upstream models) routinely exceed 15s
+      // on a cold request while staying well under 60s. A probe that
+      // times out while real calls would succeed is a false negative
+      // that blocks configuring a perfectly usable provider.
+      signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
       const body = (await res.text()).slice(0, 300);
       return { ok: false, status: res.status, error: body };
     }
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
+    // Read the body as text, then parse. Two reasons: (1) a server
+    // that ignored stream:false answers 200 with SSE `data:` lines or
+    // concatenated JSON objects, and the raw V8 message ("Unexpected
+    // non-whitespace character after JSON at position N") told the
+    // user nothing about their endpoint; (2) on that exact failure we
+    // can now show a slice of what actually came back, so "my gateway
+    // streams by default" is diagnosable from the error text alone.
+    const raw = await res.text();
+    let data: { choices?: { message?: { content?: string } }[] };
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      const head = raw.trim().slice(0, 200);
+      const streamed = head.startsWith("data:") || /\ndata:/.test(head);
+      return {
+        ok: false,
+        error: streamed
+          ? `Endpoint replied 200 with a streaming body (SSE "data:" lines), not JSON. This gateway streams by default — enable a non-streaming mode or a compliant gateway, or point the base URL at the server's non-streaming route.`
+          : `Endpoint replied 200 with a non-JSON body. First 200 chars: ${head}`,
+      };
+    }
     const reply = data.choices?.[0]?.message?.content?.trim() ?? "";
     return { ok: true, reply: reply || "(empty reply but key works)" };
   } catch (err) {
+    // AbortSignal.timeout aborts with a DOMException named
+    // "TimeoutError"; surface it as guidance instead of V8's bare
+    // "The operation was aborted due to timeout", which reads like a
+    // client bug rather than "your endpoint was too slow".
+    if ((err as Error)?.name === "TimeoutError") {
+      return {
+        ok: false,
+        error:
+          "No reply within 30s — the endpoint is too slow or unreachable right now. Free/proxy routers often spike on cold requests; try Test again, and note real AI calls allow up to 60s.",
+      };
+    }
     return { ok: false, error: (err as Error).message };
   }
 }

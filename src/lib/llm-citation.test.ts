@@ -61,21 +61,25 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
+  // Success body — text() returns the serialized JSON so callers that
+  // parse text-first (openai-compat does since the non-JSON-200 fix)
+  // see the same bytes a real gateway sends.
+  const okBody = {
+    choices: [
+      {
+        message: {
+          content:
+            "Yes, example.com is often mentioned. See https://example.com/guide for details.",
+        },
+      },
+    ],
+  };
   fetchMock.mockResolvedValue({
     ok: true,
     status: 200,
     statusText: "",
-    json: async () => ({
-      choices: [
-        {
-          message: {
-            content:
-              "Yes, example.com is often mentioned. See https://example.com/guide for details.",
-          },
-        },
-      ],
-    }),
-    text: async () => "",
+    json: async () => okBody,
+    text: async () => JSON.stringify(okBody),
   });
 });
 afterEach(() => {

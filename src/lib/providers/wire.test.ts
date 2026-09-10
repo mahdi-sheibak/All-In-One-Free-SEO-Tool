@@ -216,6 +216,50 @@ describe("OpenAI-compatible (Groq, OpenAI, OpenRouter, and six more)", () => {
     expect(h).not.toHaveProperty("authorization");
     expect(h).not.toHaveProperty("Authorization");
   });
+
+  it("sends stream:false — some servers stream by default and break the JSON parser", async () => {
+    // The wire contract is ONE JSON object back. Certain self-hosted
+    // gateways interpret a missing `stream` field as "stream please" and
+    // answer 200 with SSE `data:` lines / concatenated JSON objects,
+    // which no single-document JSON.parse accepts. Pinning it off here
+    // (and in the test-provider probe) keeps the two callers honest
+    // with each other.
+    respond({ choices: [{ message: { content: REPLY } }] });
+    await callOpenAICompat({ ...oc, ...common });
+    expect(sentBody().stream).toBe(false);
+  });
+
+  it("treats a 200 with a non-JSON body as retryable and reports the body", async () => {
+    // Regression for the Settings→Test symptom: a gateway that ignores
+    // stream:false and answers with concatenated JSON objects used to
+    // die inside res.json() with V8's "Unexpected non-whitespace
+    // character after JSON at position N". Now the raw body prefix is
+    // reported via onFailure so the user sees what their endpoint
+    // actually returned instead of a parser's complaint about it.
+    const raw =
+      '{"choices":[{"message":{"content":"hi"}}]}{"choices":[{"message":{"content":"hi"}}]}';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "",
+      text: async () => raw,
+      json: async () => {
+        throw new Error("res.json() must not be reached");
+      },
+    });
+    const seen: { status: number; body: string }[] = [];
+    const r = await callOpenAICompat({
+      ...oc,
+      ...common,
+      onFailure: (status, body) => seen.push({ status, body }),
+    });
+    expect(r).toBeNull();
+    expect(seen[0].body).toContain("non-JSON body");
+    expect(seen[0].body).toContain('"choices"');
+    // status 0 = the retryable bucket, so a one-off mangled body gets
+    // one retry instead of being declared a permanent failure.
+    expect(seen[0].status).toBe(0);
+  });
 });
 
 describe("every protocol, on the same failure", () => {
