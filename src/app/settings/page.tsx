@@ -25,6 +25,7 @@ import { db } from "@/db/client";
 import { audits, clients, keywords, tasks, users } from "@/db/schema";
 import { PageHeader } from "@/components/shell/page-header";
 import { getSetting } from "@/lib/settings-store";
+import { toPublicMeta } from "@/lib/custom-providers";
 import {
   configuredProviders,
   getActiveProvider,
@@ -34,6 +35,7 @@ import { WebhookForm } from "./webhook-form";
 import { BrandForm } from "./brand-form";
 import { ApiKeysSection } from "./api-keys-section";
 import { ActiveProviderCard } from "./active-provider-card";
+import { CustomProvidersCard } from "./custom-providers-card";
 import { CreditSaverForm } from "./credit-saver-form";
 import { BrowserForm } from "./browser-form";
 import { loadBrowserSettings } from "./browser-actions";
@@ -62,8 +64,7 @@ export default async function SettingsPage() {
     .select({ value: count() })
     .from(users);
 
-  const dbPath =
-    process.env.SEO_DB_PATH ?? path.join(process.cwd(), "data.db");
+  const dbPath = process.env.SEO_DB_PATH ?? path.join(process.cwd(), "data.db");
   const dbAbsolutePath = path.resolve(dbPath);
 
   const webhookUrl = await getSetting<string>("webhook.url");
@@ -75,7 +76,11 @@ export default async function SettingsPage() {
   const brandEmail = await getSetting<string>("brand.email");
   const brandPhone = await getSetting<string>("brand.phone");
   const brandFooter = await getSetting<string>("brand.footer_text");
-  const { byId: configuredKeys } = await configuredProviders();
+  const { byId: configuredKeys, customProviders: customRows } =
+    await configuredProviders();
+  // Strip key material — these rows cross into the client component
+  // boundary below.
+  const customProviders = toPublicMeta(customRows);
   const ollamaUrl = await getOllamaUrl();
   const activeProvider = await getActiveProvider();
   const creditSaverOn = Boolean(
@@ -150,10 +155,7 @@ export default async function SettingsPage() {
             Advanced  — performance + browser pool + AI learning controls
             About     — install / privacy / maintainer credit
           Anchors and section IDs are preserved so deep-links keep working. */}
-      <nav
-        aria-label="Settings sections"
-        className="space-y-2 text-xs"
-      >
+      <nav aria-label="Settings sections" className="space-y-2 text-xs">
         {(
           [
             {
@@ -194,7 +196,10 @@ export default async function SettingsPage() {
             },
           ] as const
         ).map((group) => (
-          <div key={group.label} className="flex flex-wrap items-center gap-1.5">
+          <div
+            key={group.label}
+            className="flex flex-wrap items-center gap-1.5"
+          >
             <span className="w-16 shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
               {group.label}
             </span>
@@ -224,7 +229,10 @@ export default async function SettingsPage() {
       </div>
 
       {/* Data */}
-      <section id="data" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="data"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Database className="size-4 text-cyan-300" />
@@ -249,7 +257,10 @@ export default async function SettingsPage() {
       </section>
 
       {/* Brand */}
-      <section id="brand" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="brand"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Palette className="size-4 text-fuchsia-300" />
@@ -275,7 +286,10 @@ export default async function SettingsPage() {
       </section>
 
       {/* Google integration */}
-      <section id="google" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="google"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Plug className="size-4 text-violet-300" />
@@ -317,8 +331,8 @@ export default async function SettingsPage() {
               </>
             ) : (
               <div className="text-xs text-muted-foreground">
-                Step-by-step guide on the next page. Skippable — the rest of
-                the app works without it.
+                Step-by-step guide on the next page. Skippable — the rest of the
+                app works without it.
               </div>
             )}
           </div>
@@ -370,7 +384,10 @@ export default async function SettingsPage() {
       </section>
 
       {/* Email / SMTP — for scheduled report delivery */}
-      <section id="email" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="email"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Mail className="size-4 text-cyan-300" />
@@ -407,7 +424,10 @@ export default async function SettingsPage() {
       </section>
 
       {/* Notifications */}
-      <section id="notify" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="notify"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Bell className="size-4 text-fuchsia-300" />
@@ -446,16 +466,19 @@ export default async function SettingsPage() {
       </section>
 
       {/* Browser pool */}
-      <section id="browser" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="browser"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Globe className="size-4 text-cyan-300" />
             Headless browser pool
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Concurrency cap, stealth fingerprint, and optional outbound
-            proxies for SERP scraping, rank checks, GBP scraping, render +
-            screenshot, and local CWV measurement.
+            Concurrency cap, stealth fingerprint, and optional outbound proxies
+            for SERP scraping, rank checks, GBP scraping, render + screenshot,
+            and local CWV measurement.
           </p>
         </header>
         <div className="relative p-5">
@@ -464,7 +487,10 @@ export default async function SettingsPage() {
       </section>
 
       {/* Public API keys + inbound webhooks both gather under #api */}
-      <section id="api" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="api"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Key className="size-4 text-violet-300" />
@@ -500,8 +526,8 @@ export default async function SettingsPage() {
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Receive events from external systems — GitHub, Linear, Google
-            Alerts, custom integrations. Each webhook gets a unique URL +
-            stored event log you can replay or query.
+            Alerts, custom integrations. Each webhook gets a unique URL + stored
+            event log you can replay or query.
           </p>
         </header>
         <div className="relative p-5">
@@ -524,40 +550,45 @@ export default async function SettingsPage() {
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Free options first. Most features work without any keys — these
-            unlock the AI executive summaries, AI assistant, OCR extraction,
-            and AI visibility tracking.
+            unlock the AI executive summaries, AI assistant, OCR extraction, and
+            AI visibility tracking.
           </p>
         </header>
         <div className="relative space-y-5 p-5">
           <ActiveProviderCard
             active={activeProvider}
             configured={configuredKeys}
+            customProviders={customProviders}
           />
           <CreditSaverForm initial={creditSaverOn} />
-          <ApiKeysSection
-            configured={configuredKeys}
-            ollamaUrl={ollamaUrl}
+          <CustomProvidersCard
+            customProviders={customProviders}
+            activeProvider={activeProvider}
           />
+          <ApiKeysSection configured={configuredKeys} ollamaUrl={ollamaUrl} />
         </div>
       </section>
 
       {/* AI learning */}
-      <section id="ai-learning" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md">
+      <section
+        id="ai-learning"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-white/5 bg-card/40 backdrop-blur-md"
+      >
         <header className="relative border-b border-white/5 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Brain className="size-4 text-violet-300" />
             AI learning
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Watches what you correct in AI output and turns it into
-            durable style rules. The longer you use the tool, the better
-            its first-pass output gets — no model training needed.
+            Watches what you correct in AI output and turns it into durable
+            style rules. The longer you use the tool, the better its first-pass
+            output gets — no model training needed.
           </p>
         </header>
         <div className="relative flex flex-wrap items-center justify-between gap-3 p-5">
           <p className="text-sm text-muted-foreground">
-            Review learned rules, manually disable any that are wrong,
-            and trigger the distill step on demand.
+            Review learned rules, manually disable any that are wrong, and
+            trigger the distill step on demand.
           </p>
           <Link
             href="/settings/ai-learning"
@@ -570,7 +601,10 @@ export default async function SettingsPage() {
       </section>
 
       {/* Privacy */}
-      <section id="privacy" className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 backdrop-blur-md">
+      <section
+        id="privacy"
+        className="relative overflow-hidden scroll-mt-24 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 backdrop-blur-md"
+      >
         <header className="relative border-b border-emerald-500/20 px-5 py-4">
           <h2 className="flex items-center gap-2 text-base font-semibold text-emerald-300">
             <Shield className="size-4" />
@@ -593,8 +627,8 @@ export default async function SettingsPage() {
             <code className="text-xs break-all">{dbAbsolutePath}</code>
             <p className="mt-2 text-[11px] text-muted-foreground">
               Back this single file up to keep everything. Move it to a new
-              machine to migrate. Replaceable via the{" "}
-              <code>SEO_DB_PATH</code> env var.
+              machine to migrate. Replaceable via the <code>SEO_DB_PATH</code>{" "}
+              env var.
             </p>
           </div>
           <PrivacyLine>

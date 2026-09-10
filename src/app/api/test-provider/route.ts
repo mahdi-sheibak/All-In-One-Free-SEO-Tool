@@ -12,7 +12,13 @@
  */
 
 import { getApiKey, getOllamaUrl } from "@/lib/api-keys";
-import { MODEL_PRESETS, defaultModelFor } from "@/lib/ai-model-presets";
+import {
+  MODEL_PRESETS,
+  defaultModelFor,
+  providerLabel,
+} from "@/lib/ai-model-presets";
+import { isCustomProvider } from "@/lib/api-providers";
+import { resolveProviderSpec } from "@/lib/provider-dispatch";
 import type { ActiveProvider } from "@/lib/api-keys";
 import { checkRateLimit, clientKey } from "@/lib/rate-limit";
 
@@ -86,7 +92,10 @@ async function probeGemini(apiKey: string): Promise<ProbeResult> {
         break;
       }
       // 400 from v1beta with API_KEY_INVALID is also key-level, not model
-      if (res.status === 400 && /API_KEY_INVALID|API key not valid/i.test(body)) {
+      if (
+        res.status === 400 &&
+        /API_KEY_INVALID|API key not valid/i.test(body)
+      ) {
         authError = { status: 400, body };
         break;
       }
@@ -119,7 +128,9 @@ async function probeOpenAICompat(opts: {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${opts.apiKey}`,
+        // Same contract as providers/openai-compat.ts: keyless local
+        // endpoints must not receive an empty `Bearer ` header.
+        ...(opts.apiKey ? { authorization: `Bearer ${opts.apiKey}` } : {}),
         ...(opts.extraHeaders ?? {}),
       },
       body: JSON.stringify({
@@ -165,7 +176,11 @@ async function probeAnthropic(apiKey: string): Promise<ProbeResult> {
       return { ok: false, status: res.status, error: body };
     }
     const data = (await res.json()) as { content?: { text?: string }[] };
-    const reply = data.content?.map((c) => c.text ?? "").join("").trim() ?? "";
+    const reply =
+      data.content
+        ?.map((c) => c.text ?? "")
+        .join("")
+        .trim() ?? "";
     return { ok: true, reply: reply || "(empty reply but key works)" };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
@@ -222,7 +237,8 @@ export async function POST(req: Request) {
   } | null;
   const provider = body?.provider as ActiveProvider | undefined;
 
-  if (!provider || !VALID.has(provider)) {
+  // Customs aren't in the static set but are probeable once saved.
+  if (!provider || !(VALID.has(provider) || isCustomProvider(provider))) {
     return Response.json(
       { ok: false, error: "Invalid provider" },
       { status: 400 },
@@ -241,6 +257,29 @@ export async function POST(req: Request) {
       };
     } else {
       result = await probeOllama(url);
+    }
+  } else if (isCustomProvider(provider)) {
+    // Probe through the SAME resolver dispatch uses — endpoint, model
+    // and key all come from the saved ai.custom_providers row, so this
+    // button tests exactly what real calls will do. No hardcoded
+    // endpoint here; an unsaved id resolves to null.
+    const spec = await resolveProviderSpec(provider);
+    if (!spec || spec.kind !== "openai-compat" || !spec.endpoint) {
+      result = {
+        ok: false,
+        error: `Custom provider "${providerLabel(provider)}" is not saved (or was deleted). Re-add it below, then test.`,
+      };
+    } else if (!spec.model) {
+      result = {
+        ok: false,
+        error: `No model set for "${providerLabel(provider)}". Type a model name in the AI model picker and press Save, then test.`,
+      };
+    } else {
+      result = await probeOpenAICompat({
+        endpoint: spec.endpoint,
+        apiKey: spec.apiKey ?? "",
+        model: spec.model,
+      });
     }
   } else {
     const key = await getApiKey(provider);

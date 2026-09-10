@@ -6,6 +6,9 @@
  * Free providers prioritised (Gemini, Groq, Perplexity, OpenRouter, Ollama).
  */
 import { getApiKey, getOllamaUrl, type Provider } from "./api-keys";
+import { isCustomProvider, type CustomProviderId } from "./api-providers";
+import { providerLabel } from "./ai-model-presets";
+import { resolveProviderSpec } from "./provider-dispatch";
 import { callGemini as sharedCallGemini } from "./providers/gemini";
 import { callAnthropic as sharedCallAnthropic } from "./providers/anthropic";
 import { callOpenAICompat as sharedCallOpenAICompat } from "./providers/openai-compat";
@@ -20,7 +23,12 @@ import { scrapeGoogleAiMode, scrapeCopilot } from "./ai-search-scrapers";
  *     web UI and extract the response
  * Both flow through the same checkOneProvider() dispatch.
  */
-export type LlmProvider = Provider | "ollama" | "google_ai_mode" | "copilot";
+export type LlmProvider =
+  | Provider
+  | "ollama"
+  | "google_ai_mode"
+  | "copilot"
+  | CustomProviderId;
 
 /**
  * How a provider produced its answer. This is THE thing that decides
@@ -40,7 +48,7 @@ export type LlmProvider = Provider | "ollama" | "google_ai_mode" | "copilot";
  */
 export type GroundingMode = "live" | "memory";
 
-export const PROVIDER_GROUNDING: Record<LlmProvider, GroundingMode> = {
+export const PROVIDER_GROUNDING: Partial<Record<LlmProvider, GroundingMode>> = {
   // Native web search built into the sonar models.
   perplexity: "live",
   // Grounded below via the google_search tool.
@@ -61,6 +69,10 @@ export const PROVIDER_GROUNDING: Record<LlmProvider, GroundingMode> = {
   cerebras: "memory",
   together: "memory",
   github: "memory",
+  // Custom providers are deliberately absent: the Partial Record + the
+  // `?? "memory"` fallback at the read site gives every user-registered
+  // endpoint the honest "memory" default (they're plain chat-completions
+  // with no retrieval) without us having to touch this table.
 };
 
 export type CitationCheckResult = {
@@ -88,7 +100,11 @@ function buildPrompt(query: string): string {
 }
 
 function normaliseDomain(raw: string): string {
-  return raw.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split("/")[0].toLowerCase();
+  return raw
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .split("/")[0]
+    .toLowerCase();
 }
 
 function extractUrls(text: string): string[] {
@@ -120,7 +136,10 @@ function countDomainMentions(text: string, domain: string): number {
   const norm = normaliseDomain(domain);
   if (!norm) return 0;
   // Match either the bare domain or a URL to it
-  const re = new RegExp(`(?:https?://)?(?:www\\.)?${norm.replace(/\./g, "\\.")}`, "gi");
+  const re = new RegExp(
+    `(?:https?://)?(?:www\\.)?${norm.replace(/\./g, "\\.")}`,
+    "gi",
+  );
   const matches = text.match(re);
   return matches ? matches.length : 0;
 }
@@ -334,24 +353,21 @@ async function callOpenRouter(
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), 30_000);
   try {
-    const res = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        signal: c.signal,
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
-          "x-title": "SEO Tool",
-        },
-        body: JSON.stringify({
-          // Free model — Llama 3.3 free tier on OpenRouter.
-          model: "meta-llama/llama-3.3-70b-instruct:free",
-          max_tokens: 1500,
-          messages: [{ role: "user", content: prompt }],
-        }),
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      signal: c.signal,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+        "x-title": "SEO Tool",
       },
-    );
+      body: JSON.stringify({
+        // Free model — Llama 3.3 free tier on OpenRouter.
+        model: "meta-llama/llama-3.3-70b-instruct:free",
+        max_tokens: 1500,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
     if (!res.ok) return null;
     const data = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
@@ -369,23 +385,20 @@ async function callGroq(
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), 30_000);
   try {
-    const res = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        signal: c.signal,
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          max_tokens: 1500,
-          temperature: 0.2,
-          messages: [{ role: "user", content: prompt }],
-        }),
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      signal: c.signal,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
       },
-    );
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        max_tokens: 1500,
+        temperature: 0.2,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
     if (!res.ok) return null;
     const data = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
@@ -450,7 +463,31 @@ export async function checkOneProvider(
   let grounding: GroundingMode = PROVIDER_GROUNDING[provider] ?? "memory";
 
   try {
-    if (provider === "ollama") {
+    if (isCustomProvider(provider)) {
+      // Custom endpoints go through the same resolver dispatch uses —
+      // endpoint/model/key all come from the ai.custom_providers row,
+      // and keyless local servers send no Bearer header. Grounding
+      // stays "memory" (see PROVIDER_GROUNDING above).
+      const spec = await resolveProviderSpec(provider);
+      if (!spec || spec.kind !== "openai-compat" || !spec.endpoint) {
+        error = `Custom provider "${providerLabel(provider)}" is no longer configured`;
+      } else if (!spec.model) {
+        error = `No model set for "${providerLabel(provider)}" — pick one in Settings → AI`;
+      } else {
+        response = await sharedCallOpenAICompat({
+          endpoint: spec.endpoint,
+          apiKey: spec.apiKey ?? "",
+          model: spec.model,
+          system: "",
+          messages: [{ role: "user", content: prompt }],
+          maxTokens: 1500,
+          temperature: 0.2,
+          timeoutMs: 60_000,
+          caller: "llm-citation",
+        });
+        if (!response) error = "No response from custom provider";
+      }
+    } else if (provider === "ollama") {
       const url = await getOllamaUrl();
       response = await callOllama(url, prompt);
     } else if (provider === "perplexity") {

@@ -16,6 +16,44 @@ export type Provider =
   | "together"
   | "github";
 
+/**
+ * Ids of the providers whose definitions ship with the app — the keyed
+ * catalog above plus local Ollama. Custom user-registered providers are
+ * NOT in this union; they use the `` `custom:${string}` `` id space below.
+ * Static lookup tables (MODEL_PRESETS, PROVIDER_LABEL, PROVIDER_DISPATCH)
+ * are typed against this so the compiler keeps them exhaustive over the
+ * built-ins while customs flow through resolver helpers instead.
+ */
+export type StaticProviderId = Provider | "ollama";
+
+/** Id of a user-registered custom provider: `custom:<slug>`. */
+export type CustomProviderId = `custom:${string}`;
+
+/**
+ * Every provider id the app can dispatch to: the built-ins plus any
+ * number of user-registered custom OpenAI-compatible endpoints
+ * (`custom:<slug>`, stored in the `ai.custom_providers` settings row —
+ * see lib/custom-providers.ts).
+ *
+ * Lives here (the client-safe catalog module), not in api-keys.ts,
+ * so client components can narrow custom ids without importing any
+ * server-only code.
+ */
+export type ActiveProvider = StaticProviderId | CustomProviderId;
+
+/** Type guard: is this id a user-registered custom provider? */
+export function isCustomProvider(p: string): p is CustomProviderId {
+  return p.startsWith("custom:");
+}
+
+/**
+ * The slug part of a custom id: `custom:lm-studio` → `"lm-studio"`.
+ * Returns "" for non-custom ids.
+ */
+export function customProviderSlug(p: string): string {
+  return isCustomProvider(p) ? p.slice("custom:".length) : "";
+}
+
 export const PROVIDER_CATALOG: {
   id: Provider | "ollama";
   label: string;
@@ -197,7 +235,8 @@ export const PROVIDER_CATALOG: {
     keyUrl: "https://cloud.cerebras.ai/platform/",
     keyUrlLabel: "Cerebras Cloud",
     envVar: "CEREBRAS_API_KEY",
-    notes: "Insanely fast — use when you need streaming responses to feel instant.",
+    notes:
+      "Insanely fast — use when you need streaming responses to feel instant.",
     steps: [
       "Click 'Open Cerebras Cloud' → sign up.",
       "Verify email.",

@@ -4,11 +4,14 @@ import { useEffect, useState } from "react";
 import { Cpu } from "lucide-react";
 import {
   MODEL_PRESETS,
-  PROVIDER_LABEL,
   defaultModelFor,
+  providerLabel,
+  seedCustomProviderMeta,
 } from "@/lib/ai-model-presets";
+import { isCustomProvider } from "@/lib/api-providers";
 import type { ActiveProvider } from "@/lib/api-keys";
 import { listConfiguredProviders } from "@/app/api/ai-providers/actions";
+import { saveCustomProvider } from "@/app/settings/key-actions";
 
 export type ModelSelection = {
   /** undefined = use the workspace's active provider. */
@@ -22,6 +25,13 @@ export type ModelSelection = {
  * AI call. When the user only has 0-1 providers configured, the picker
  * collapses (nothing useful to choose) — to enable, configure another key
  * in Settings.
+ *
+ * Custom providers (`custom:<slug>`) have no static preset table — their
+ * model id is free text only the endpoint owner knows. For those the
+ * model control becomes a text input seeded with the saved model, and
+ * edits persist on blur via the partial-save form of saveCustomProvider
+ * (blank fields keep stored values there), so the typed model becomes
+ * that provider's default for future calls too.
  *
  * Does not call any AI itself — only emits selection changes via onChange.
  * Caller is responsible for forwarding `provider` and `model` to whatever
@@ -42,6 +52,10 @@ export function AiModelPicker({
 
   useEffect(() => {
     listConfiguredProviders().then((r) => {
+      // Seed the client-side runtime cache so providerLabel() and
+      // defaultModelFor() resolve custom ids below — the server's
+      // module-level cache does not cross the RSC boundary.
+      seedCustomProviderMeta(r.customProviders);
       setConfigured(r.configured);
       setActive(r.active);
       setLoaded(true);
@@ -54,21 +68,34 @@ export function AiModelPicker({
   if (configured.length <= 1) return null;
 
   const effectiveProvider = selection.provider ?? active ?? configured[0];
-  const presets = MODEL_PRESETS[effectiveProvider] ?? [];
-  const effectiveModel =
-    selection.model ?? defaultModelFor(effectiveProvider);
+  // Built-ins read the static preset table; customs have none — the
+  // guard also narrows the Record index for TypeScript.
+  const presets = isCustomProvider(effectiveProvider)
+    ? []
+    : (MODEL_PRESETS[effectiveProvider] ?? []);
+  const effectiveModel = selection.model ?? defaultModelFor(effectiveProvider);
 
-  const cls =
-    size === "sm"
-      ? "h-7 text-[11px]"
-      : "h-8 text-xs";
+  const cls = size === "sm" ? "h-7 text-[11px]" : "h-8 text-xs";
 
   function pickProvider(p: ActiveProvider) {
     // When provider changes, reset to that provider's default model
-    onChange({ provider: p, model: defaultModelFor(p) });
+    // (customs: their saved model via the seeded cache — may be "").
+    onChange({ provider: p, model: defaultModelFor(p) || undefined });
   }
   function pickModel(m: string) {
     onChange({ provider: effectiveProvider, model: m });
+  }
+  function persistCustomModel(m: string) {
+    // Only reachable when the current provider is custom, but re-check
+    // so a stray blur after a provider switch can't create garbage.
+    if (!isCustomProvider(effectiveProvider) || !m.trim()) return;
+    // Partial save: only id + model are sent — blank label/baseUrl keep
+    // the stored values and blank apiKey keeps the stored key (see
+    // saveCustomProvider). Key material never round-trips the client.
+    const fd = new FormData();
+    fd.set("id", effectiveProvider);
+    fd.set("model", m.trim());
+    void saveCustomProvider(fd).catch(() => undefined);
   }
 
   return (
@@ -86,19 +113,26 @@ export function AiModelPicker({
       >
         {configured.map((p) => (
           <option key={p} value={p}>
-            {PROVIDER_LABEL[p]}
+            {providerLabel(p)}
             {p === active ? " (default)" : ""}
           </option>
         ))}
       </select>
-      {presets.length > 0 && (
+      {isCustomProvider(effectiveProvider) ? (
+        <input
+          value={effectiveModel}
+          onChange={(e) => pickModel(e.target.value)}
+          onBlur={(e) => persistCustomModel(e.target.value)}
+          className={`${cls} w-40 rounded-md border border-white/10 bg-card/60 px-1.5 focus:outline-none focus:ring-1 focus:ring-ring/40`}
+          placeholder="model id"
+          title="Model id sent to this endpoint — edits are saved as the default"
+        />
+      ) : presets.length > 0 ? (
         <select
           value={effectiveModel}
           onChange={(e) => pickModel(e.target.value)}
           className={`${cls} max-w-[200px] truncate rounded-md border border-white/10 bg-card/60 px-1.5 focus:outline-none focus:ring-1 focus:ring-ring/40`}
-          title={
-            presets.find((p) => p.id === effectiveModel)?.hint ?? "Model"
-          }
+          title={presets.find((p) => p.id === effectiveModel)?.hint ?? "Model"}
         >
           {presets.map((m) => (
             <option key={m.id} value={m.id} title={m.hint}>
@@ -106,7 +140,7 @@ export function AiModelPicker({
             </option>
           ))}
         </select>
-      )}
+      ) : null}
     </div>
   );
 }

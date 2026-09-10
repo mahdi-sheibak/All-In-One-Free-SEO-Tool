@@ -9,6 +9,8 @@
  */
 
 import { getActiveProvider, getApiKey, getOllamaUrl } from "./api-keys";
+import { isCustomProvider } from "./api-providers";
+import { getCustomProvider } from "./settings-store";
 import { logAiCall, checkMonthlyCap } from "./ai-usage";
 import { callGemini as sharedCallGemini } from "./providers/gemini";
 import { callAnthropic as sharedCallAnthropic } from "./providers/anthropic";
@@ -34,16 +36,23 @@ export type VisionCallOpts = {
   modelOverride?: string;
 };
 
-export async function callAIVision(opts: VisionCallOpts): Promise<string | null> {
-  // Per-call provider override (only honored if user has a key for it)
+export async function callAIVision(
+  opts: VisionCallOpts,
+): Promise<string | null> {
+  // Per-call provider override (only honored if usable). Custom
+  // endpoints are dispatchable once registered — keyless local ones
+  // (LM Studio, llama.cpp) legitimately have no key to check.
   let provider: import("./api-keys").ActiveProvider | null = null;
   if (opts.providerOverride) {
-    if (opts.providerOverride === "ollama") {
+    const override = opts.providerOverride;
+    if (isCustomProvider(override)) {
+      if (await getCustomProvider(override)) provider = override;
+    } else if (override === "ollama") {
       const url = await getOllamaUrl();
       if (url) provider = "ollama";
     } else {
-      const k = await getApiKey(opts.providerOverride);
-      if (k) provider = opts.providerOverride;
+      const k = await getApiKey(override);
+      if (k) provider = override;
     }
   }
   if (!provider) provider = await getActiveProvider();
@@ -114,11 +123,32 @@ export async function callAIVision(opts: VisionCallOpts): Promise<string | null>
       const k = await getApiKey("openrouter");
       if (!k) return null;
       // Use a vision-capable free model
-      model = opts.modelOverride || "meta-llama/llama-3.2-11b-vision-instruct:free";
+      model =
+        opts.modelOverride || "meta-llama/llama-3.2-11b-vision-instruct:free";
       text = await callOpenAI({
         endpoint: "https://openrouter.ai/api/v1/chat/completions",
         extraHeaders: { "x-title": "SEO Tool" },
         apiKey: k,
+        model,
+        system: opts.system,
+        messages: opts.messages,
+        max,
+        temperature,
+        timeoutMs,
+      });
+    } else if (isCustomProvider(provider)) {
+      // Custom OpenAI-compatible endpoints accept the image passthrough
+      // format (most gateways — LM Studio, llama.cpp server, vLLM —
+      // support image_url content parts). Model comes from the saved
+      // row; "" means the user never picked one, and sending model: ""
+      // would just 400, so bail out with nothing instead.
+      const cp = await getCustomProvider(provider);
+      if (!cp) return null;
+      model = opts.modelOverride?.trim() || cp.model;
+      if (!model) return null;
+      text = await callOpenAI({
+        endpoint: `${cp.baseUrl}/chat/completions`,
+        apiKey: (await getApiKey(provider)) ?? "",
         model,
         system: opts.system,
         messages: opts.messages,
@@ -140,7 +170,9 @@ export async function callAIVision(opts: VisionCallOpts): Promise<string | null>
         .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
         .join("\n\n");
       text = await callAI({
-        system: opts.system + "\n\n[Note: this provider doesn't support image input — answer the text portion only.]",
+        system:
+          opts.system +
+          "\n\n[Note: this provider doesn't support image input — answer the text portion only.]",
         user: transcript,
         maxTokens: max,
         temperature,
@@ -163,7 +195,8 @@ export async function callAIVision(opts: VisionCallOpts): Promise<string | null>
     feature: opts.feature ?? "general",
     provider,
     model,
-    promptText: opts.system + "\n" + opts.messages.map((m) => m.content).join("\n"),
+    promptText:
+      opts.system + "\n" + opts.messages.map((m) => m.content).join("\n"),
     completionText: text,
     latencyMs: Date.now() - start,
     clientId: opts.clientId ?? null,

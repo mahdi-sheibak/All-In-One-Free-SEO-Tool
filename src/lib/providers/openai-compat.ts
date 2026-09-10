@@ -78,7 +78,8 @@ export async function callOpenAICompat(
 async function dispatchOpenAICompat(
   opts: OpenAICompatCallOpts,
 ): Promise<
-  { ok: true; text: string | null } | { ok: false; status: number; body: string }
+  | { ok: true; text: string | null }
+  | { ok: false; status: number; body: string }
 > {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), opts.timeoutMs);
@@ -111,7 +112,12 @@ async function dispatchOpenAICompat(
       signal: ctl.signal,
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${opts.apiKey}`,
+        // Keyless custom endpoints (LM Studio, llama.cpp server, many
+        // self-hosted gateways) reject or ignore Bearer auth — and
+        // sending `Bearer ` with an empty key can make some servers
+        // 401. Omit the header entirely when no key is configured;
+        // catalog providers always have a key enforced upstream.
+        ...(opts.apiKey ? { authorization: `Bearer ${opts.apiKey}` } : {}),
         ...(opts.extraHeaders ?? {}),
       },
       body: JSON.stringify({

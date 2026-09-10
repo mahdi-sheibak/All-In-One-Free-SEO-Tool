@@ -2,11 +2,9 @@
 
 import { useTransition } from "react";
 import { Loader2, Sparkles, Check } from "lucide-react";
-import {
-  PROVIDER_CATALOG,
-  type Provider,
-} from "@/lib/api-providers";
+import { PROVIDER_CATALOG, type ActiveProvider } from "@/lib/api-providers";
 import { setActiveProvider } from "./key-actions";
+import type { CustomProviderPublicMeta } from "@/lib/custom-providers";
 
 const tierTone: Record<"free" | "free-tier" | "paid", string> = {
   free: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
@@ -17,9 +15,11 @@ const tierTone: Record<"free" | "free-tier" | "paid", string> = {
 export function ActiveProviderCard({
   active,
   configured,
+  customProviders,
 }: {
   active: string | null;
   configured: Record<string, boolean>;
+  customProviders: CustomProviderPublicMeta[];
 }) {
   const [pending, startTransition] = useTransition();
 
@@ -44,9 +44,9 @@ export function ActiveProviderCard({
         <div>
           <div className="text-sm font-semibold">Active AI provider</div>
           <p className="text-[11px] text-muted-foreground">
-            All AI features in this app use this one model — exec summaries,
-            the AI assistant, and OCR extraction. AI visibility tracking is
-            the exception (it intentionally calls every configured provider).
+            All AI features in this app use this one model — exec summaries, the
+            AI assistant, and OCR extraction. AI visibility tracking is the
+            exception (it intentionally calls every configured provider).
           </p>
         </div>
         {pending && (
@@ -64,9 +64,11 @@ export function ActiveProviderCard({
               disabled={pending}
               onClick={() => {
                 if (isOn) {
-                  // Configured → switch active provider.
+                  // Configured → switch active provider. Custom ids are
+                  // valid ActiveProvider values (the isCustomProvider guard
+                  // in the action accepts them).
                   startTransition(() =>
-                    setActiveProvider(p.id as Provider | "ollama"),
+                    setActiveProvider(p.id as ActiveProvider),
                   );
                 } else {
                   // Not configured → scroll to its key input + focus it
@@ -124,6 +126,66 @@ export function ActiveProviderCard({
                   : p.tier === "free-tier"
                     ? "FREE TIER"
                     : "PAID"}
+              </span>
+            </button>
+          );
+        })}
+        {/* Custom endpoints mount after the catalog: same button shape,
+            a CUSTOM tier badge instead of FREE/PAID, and unconfigured
+            ones jump to the custom card below instead of a key field
+            (they have no per-provider key input in ApiKeysSection). */}
+        {customProviders.map((cp) => {
+          const isOn = configured[cp.id];
+          const isActive = active === cp.id;
+          return (
+            <button
+              key={cp.id}
+              type="button"
+              disabled={pending}
+              onClick={() => {
+                if (isOn) {
+                  startTransition(() => setActiveProvider(cp.id));
+                } else {
+                  const target = document.getElementById("provider-custom");
+                  if (target) {
+                    target.scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    });
+                    target.classList.add("ring-2", "ring-violet-500/60");
+                    setTimeout(() => {
+                      target.classList.remove("ring-2", "ring-violet-500/60");
+                    }, 1800);
+                  }
+                }
+              }}
+              className={
+                isActive
+                  ? "flex items-center gap-2 rounded-xl border border-violet-500/40 bg-violet-500/15 px-3 py-2.5 text-left text-sm ring-1 ring-inset ring-violet-500/30"
+                  : isOn
+                    ? "flex items-center gap-2 rounded-xl border border-white/5 bg-black/30 px-3 py-2.5 text-left text-sm transition-colors hover:border-violet-500/30 hover:bg-white/[0.04]"
+                    : "flex items-center gap-2 rounded-xl border border-violet-500/15 bg-violet-500/[0.03] px-3 py-2.5 text-left text-sm transition-colors hover:border-violet-500/40 hover:bg-violet-500/[0.08] cursor-pointer"
+              }
+              title={
+                !isOn
+                  ? `Click to finish setting up ${cp.label} (jumps to the custom endpoint card)`
+                  : isActive
+                    ? "Currently the active provider"
+                    : `Switch to ${cp.label}`
+              }
+            >
+              <span
+                className={
+                  isActive
+                    ? "grid size-4 shrink-0 place-items-center rounded-full bg-violet-500 text-violet-50"
+                    : "size-4 shrink-0 rounded-full border border-white/15"
+                }
+              >
+                {isActive && <Check className="size-3" />}
+              </span>
+              <span className="flex-1 truncate font-medium">{cp.label}</span>
+              <span className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-violet-300 ring-1 ring-inset ring-violet-500/30">
+                CUSTOM
               </span>
             </button>
           );

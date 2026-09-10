@@ -1,9 +1,28 @@
-import { getSetting, setSetting } from "./settings-store";
+import {
+  getSetting,
+  setSetting,
+  getCustomProvider,
+  getCustomProviders,
+} from "./settings-store";
+import type { CustomProvider } from "./custom-providers";
 import { decrypt, ensureEncrypted, isEncrypted } from "./crypto";
+import {
+  isCustomProvider,
+  type ActiveProvider,
+  type Provider,
+} from "./api-providers";
 
-export type { Provider } from "./api-providers";
-export { PROVIDER_CATALOG } from "./api-providers";
-import type { Provider } from "./api-providers";
+// Re-exported for the ~20 modules that import these from here — the
+// types moved to their real home (api-providers, client-safe) when
+// custom providers were added, and this keeps existing call sites like
+// `import type { ActiveProvider } from "@/lib/api-keys"` working.
+export type {
+  Provider,
+  ActiveProvider,
+  CustomProviderId,
+  StaticProviderId,
+} from "./api-providers";
+export { PROVIDER_CATALOG, isCustomProvider } from "./api-providers";
 
 const ENV_VAR: Record<Provider, string> = {
   openai: "OPENAI_API_KEY",
@@ -33,7 +52,29 @@ const SETTING_KEY: Record<Provider, `api.${Provider}`> = {
   github: "api.github",
 };
 
-export async function getApiKey(provider: Provider): Promise<string | null> {
+export async function getApiKey(
+  provider: ActiveProvider,
+): Promise<string | null> {
+  // Custom providers keep their key INSIDE the custom_providers row
+  // (not a per-provider api.* setting). Dispatching through this
+  // function means callers never need to know the difference:
+  //   saved + key   → decrypted plaintext
+  //   saved, no key → "" (legitimately keyless — LM Studio, llama.cpp)
+  //   not saved     → null (unconfigured; callers treat as no key)
+  //   corrupt row   → "" (never send `enc:v1:...` as a Bearer token)
+  if (isCustomProvider(provider)) {
+    const cp = await getCustomProvider(provider);
+    if (!cp) return null;
+    if (!cp.apiKey) return "";
+    return decrypt(cp.apiKey) ?? "";
+  }
+
+  // Ollama never has an API key — its config is the server URL, handled
+  // by hasExplicitOllamaUrl()/getOllamaUrl(). The pre-custom signature
+  // didn't even accept "ollama"; null keeps that de-facto behaviour for
+  // the widened id space (and narrows `provider` to Provider below).
+  if (provider === "ollama") return null;
+
   // Settings DB takes precedence — that's what the user pasted in the UI.
   const fromDb = await getSetting<string>(SETTING_KEY[provider]);
   if (fromDb && fromDb.length > 0) {
@@ -42,7 +83,9 @@ export async function getApiKey(provider: Provider): Promise<string | null> {
     // ciphertext as the API key Bearer token. Fall through to env var.
     if (plain === null) {
       const fromEnvFallback = process.env[ENV_VAR[provider]];
-      return fromEnvFallback && fromEnvFallback.length > 0 ? fromEnvFallback : null;
+      return fromEnvFallback && fromEnvFallback.length > 0
+        ? fromEnvFallback
+        : null;
     }
     // Lazy migration: if the row was stored plaintext, re-write encrypted
     // on first read so subsequent reads/backups carry the protected form.
@@ -63,7 +106,9 @@ export async function getApiKey(provider: Provider): Promise<string | null> {
 export async function getOllamaUrl(): Promise<string> {
   const fromDb = await getSetting<string>("api.ollama_url");
   if (fromDb && fromDb.length > 0) return fromDb.replace(/\/+$/, "");
-  return process.env.OLLAMA_URL?.replace(/\/+$/, "") ?? "http://localhost:11434";
+  return (
+    process.env.OLLAMA_URL?.replace(/\/+$/, "") ?? "http://localhost:11434"
+  );
 }
 
 /**
@@ -89,8 +134,6 @@ export async function hasExplicitOllamaUrl(): Promise<boolean> {
   return (process.env.OLLAMA_URL ?? "").trim().length > 0;
 }
 
-export type ActiveProvider = Provider | "ollama";
-
 /**
  * Returns the user's chosen "active" AI provider — used by every single-LLM
  * feature (exec summary, chatbot, OCR extraction). If they haven't picked one
@@ -115,12 +158,13 @@ export async function getActiveProvider(): Promise<ActiveProvider | null> {
  * (either in DB or in env). Order matches the catalog (free first).
  */
 export async function configuredProviders(): Promise<{
-  ids: (Provider | "ollama")[];
+  ids: ActiveProvider[];
   byId: Record<string, boolean>;
+  customProviders: CustomProvider[];
 }> {
   const { PROVIDER_CATALOG } = await import("./api-providers");
   const byId: Record<string, boolean> = {};
-  const ids: (Provider | "ollama")[] = [];
+  const ids: ActiveProvider[] = [];
 
   for (const p of PROVIDER_CATALOG) {
     let configured = false;
@@ -136,5 +180,18 @@ export async function configuredProviders(): Promise<{
     byId[p.id] = configured;
     if (configured) ids.push(p.id);
   }
-  return { ids, byId };
+
+  // Custom user-registered providers come LAST: existence in the saved
+  // list is the whole "configured" test (a keyless local endpoint is
+  // fully usable), and the ids[0] fallback should still prefer a
+  // curated free provider over a user experiment when both exist.
+  const customs = await getCustomProviders();
+  for (const c of customs) {
+    byId[c.id] = true;
+    ids.push(c.id);
+  }
+  // Full rows ride along (key material included) — callers shipping to
+  // the browser MUST pass them through toPublicMeta() first (the
+  // ai-providers action does). Server callers get the storage shape.
+  return { ids, byId, customProviders: customs };
 }

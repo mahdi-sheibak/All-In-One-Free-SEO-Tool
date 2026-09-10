@@ -1,159 +1,170 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { workspaceSettings } from "@/db/schema";
+import {
+ CUSTOM_PROVIDERS_SETTING_KEY,
+ parseCustomProviders,
+ type CustomProvider,
+} from "@/lib/custom-providers";
+import { seedCustomProviderMeta } from "@/lib/ai-model-presets";
 
 export type SettingKey =
-  /**
-   * Per-runner scheduler bookkeeping: `scheduler.<runner_id>.started_at`,
-   * `.finished_at`, `.last_error`. Open-ended because the runner list
-   * lives in scheduler.ts and shouldn't require editing this union every
-   * time a background job is added — the prefix keeps it namespaced.
-   */
-  | `scheduler.${string}`
-  | "webhook.url"
-  | "webhook.notify_on_audit_complete"
-  | "webhook.notify_on_score_drop"
-  | "webhook.score_drop_threshold"
-  | "brand.name"
-  | "brand.logo_data_url"
-  | "brand.color"
-  // Extended brand fields — surfaced on PDFs (invoice, report cover),
-  // email digests (weekly digest header / footer), and the client
-  // portal share page. Optional; tool falls back gracefully when any
-  // field is empty.
-  | "brand.tagline"
-  | "brand.website"
-  | "brand.email"
-  | "brand.phone"
-  | "brand.footer_text"
-  | "ui.mode"
-  /** "light" | "dark" | "system" — defaults to "system". */
-  | "ui.theme"
-  /** Autonomy level and guardrails for the agent. See lib/agent/autonomy.ts. */
-  | "agent.settings"
-  | "api.openai"
-  | "api.anthropic"
-  | "api.gemini"
-  | "api.perplexity"
-  | "api.openrouter"
-  | "api.groq"
-  | "api.mistral"
-  | "api.deepseek"
-  | "api.cerebras"
-  | "api.together"
-  | "api.github"
-  | "api.ollama_url"
-  | "ai.active_provider"
-  // Google OAuth — user supplies their own Cloud OAuth client (free, ~5 min).
-  // Tokens stored encrypted-at-rest at the SQLite layer (the file lives on
-  // their machine; this is a single-user local-first app).
-  | "google.client_id"
-  | "google.client_secret"
-  | "google.refresh_token"
-  | "google.access_token"
-  | "google.access_token_expires_at"
-  | "google.connected_email"
-  // SMTP for outbound report email. Stored per-instance; the user enters
-  // their own SMTP credentials (Gmail app password, SendGrid, Resend SMTP,
-  // a Hetzner mail box — anything that speaks SMTP).
-  | "smtp.host"
-  | "smtp.port"
-  | "smtp.user"
-  | "smtp.password"
-  | "smtp.from_email"
-  | "smtp.from_name"
-  | "smtp.secure"
-  | "schedule_runner.last_run"
-  | "page_monitor_runner.last_run"
-  | "daily_agent_runner.last_run"
-  | "news_runner.last_run"
-  | "news_runner.last_seen_at"
-  | "seen.news.last_seen_at"
-  | "seen.suggestions.last_seen_at"
-  | "seen.page_changes.last_seen_at"
-  | "seen.activity.last_seen_at"
-  | "alerts.thresholds"
-  | "mention_digest_runner.last_run"
-  | "playbook_monitor_runner.last_run"
-  | "lost_link_runner.last_run"
-  | "outreach_reply_poll.last_run"
-  | "anomaly_runner.last_run"
-  | "title_test_runner.last_run"
-  | "google.gmail_scope_ok"
-  | "google.gmail_scope_checked_at"
-  | "api.pagespeed"
-  // Credit-saver mode: cap maxTokens, force terse system prompt, lower temp.
-  // ON keeps token use under ~500/answer for cheap providers like Gemini /
-  // Groq free tiers. OFF gives full-quality long-form answers (defaults OFF).
-  | "ai.credit_saver.enabled"
-  | "outreach.sender_name"
-  | "indexnow.key"
-  | "bing.api_key"
-  | "youtube.api_key"
-  // Browser pool — controls headless chromium concurrency + outbound proxies.
-  // proxies is a newline-separated list of "http://user:pass@host:port" or
-  // "host:port"; rotated round-robin per launched context. Empty = direct.
-  | "browser.max_concurrency"
-  | "browser.proxies"
-  | "browser.stealth_enabled"
-  // Remote browser endpoint. When set, all withBrowserContext calls use
-  // chromium.connect(<this WS endpoint>) instead of launching local
-  // Chrome. Lets self-hosters on tiny VPSes offload browser work to a
-  // managed service (Browserless, Cloudflare Browser Rendering, etc.).
-  | "browser.remote_ws"
-  // Lean-mode toggles — disable specific browser-dependent tools to
-  // free RAM on small boxes. Tool pages still render but show a
-  // "disabled in lean mode" notice and a link back to Settings.
-  | "browser.disable_rank_check"
-  | "browser.disable_local_cwv"
-  | "browser.disable_serp_scan"
-  | "browser.disable_gbp_scraper"
-  // Cookie jar for logged-in scraping. Stored as JSON array of
-  // { domain, name, value, path?, expires?, secure?, httpOnly? }.
-  | "browser.cookies"
-  // Monthly USD cap for AI calls. When set, calls past the cap return null
-  // (with a "cap reached" error), so a runaway workflow can't drain credits.
-  | "ai.monthly_cap_usd"
-  // Per-day brand list used by branded-vs-non-branded GSC splitter.
-  | "brand.match_terms"
-  // Weekly digest settings
-  | "digest.recipient_email"
-  | "digest.auto_send_enabled"
-  | "digest.last_sent_at"
-  | "digest.last_auto_run_at"
-  // First-run wizard gate. ISO timestamp written when the user clicks
-  // "Skip for now" on /welcome OR completes any meaningful step (adding
-  // a client / configuring an AI provider clears the fresh state
-  // naturally). Once set, the dashboard never redirects to /welcome again.
-  | "onboarding.dismissed_at"
-  // Opt-in browser-mode scrapers for AI search products that don't
-  // have public APIs (Google AI Mode via ?udm=50, Microsoft Copilot).
-  // Default OFF because these add ~15-20s per keyword per platform
-  // to an "AI visibility check all keywords" run — big impact on
-  // check-all latency. When ON, both providers get added to the
-  // check list alongside API-based providers.
-  | "ai_visibility.browser_scraped_enabled"
-  // Daily auto-backup. Default ON. The user can disable from /settings/backup
-  // if they prefer to manage backups externally (Restic / Borg / Time Machine).
-  | "autobackup.enabled"
-  | "autobackup.cadence_hours"
-  | "autobackup.retention"
-  | "autobackup.last_run_at"
-  | "autobackup.last_bytes"
-  | "autobackup.last_error"
-  // Retention / cleanup. Default ON. Periodically deletes screenshots,
-  // ai_calls, activity_log, and system_errors older than the
-  // configured age. Audits + audit_issues are NEVER touched
-  // (historical record). See src/lib/retention-cleanup.ts.
-  | "retention.enabled"
-  | "retention.cadence_hours"
-  | "retention.screenshots_days"
-  | "retention.ai_calls_days"
-  | "retention.activity_days"
-  | "retention.errors_days"
-  | "retention.last_run_at"
-  | "retention.last_summary"
-  | "retention.last_error";
+ /**
+  * Per-runner scheduler bookkeeping: `scheduler.<runner_id>.started_at`,
+  * `.finished_at`, `.last_error`. Open-ended because the runner list
+  * lives in scheduler.ts and shouldn't require editing this union every
+  * time a background job is added — the prefix keeps it namespaced.
+  */
+ | `scheduler.${string}`
+ | "webhook.url"
+ | "webhook.notify_on_audit_complete"
+ | "webhook.notify_on_score_drop"
+ | "webhook.score_drop_threshold"
+ | "brand.name"
+ | "brand.logo_data_url"
+ | "brand.color"
+ // Extended brand fields — surfaced on PDFs (invoice, report cover),
+ // email digests (weekly digest header / footer), and the client
+ // portal share page. Optional; tool falls back gracefully when any
+ // field is empty.
+ | "brand.tagline"
+ | "brand.website"
+ | "brand.email"
+ | "brand.phone"
+ | "brand.footer_text"
+ | "ui.mode"
+ /** "light" | "dark" | "system" — defaults to "system". */
+ | "ui.theme"
+ /** Autonomy level and guardrails for the agent. See lib/agent/autonomy.ts. */
+ | "agent.settings"
+ | "api.openai"
+ | "api.anthropic"
+ | "api.gemini"
+ | "api.perplexity"
+ | "api.openrouter"
+ | "api.groq"
+ | "api.mistral"
+ | "api.deepseek"
+ | "api.cerebras"
+ | "api.together"
+ | "api.github"
+ | "api.ollama_url"
+ | "ai.active_provider"
+ // Custom user-registered OpenAI-compatible providers (LM Studio,
+ // llama.cpp, vLLM, LiteLLM, niche gateways). ONE JSON list under a
+ // single row — no DB migration needed (value column is TEXT/JSON mode).
+ // Shape + validation rules live in lib/custom-providers.ts.
+ | "ai.custom_providers"
+ // Google OAuth — user supplies their own Cloud OAuth client (free, ~5 min).
+ // Tokens stored encrypted-at-rest at the SQLite layer (the file lives on
+ // their machine; this is a single-user local-first app).
+ | "google.client_id"
+ | "google.client_secret"
+ | "google.refresh_token"
+ | "google.access_token"
+ | "google.access_token_expires_at"
+ | "google.connected_email"
+ // SMTP for outbound report email. Stored per-instance; the user enters
+ // their own SMTP credentials (Gmail app password, SendGrid, Resend SMTP,
+ // a Hetzner mail box — anything that speaks SMTP).
+ | "smtp.host"
+ | "smtp.port"
+ | "smtp.user"
+ | "smtp.password"
+ | "smtp.from_email"
+ | "smtp.from_name"
+ | "smtp.secure"
+ | "schedule_runner.last_run"
+ | "page_monitor_runner.last_run"
+ | "daily_agent_runner.last_run"
+ | "news_runner.last_run"
+ | "news_runner.last_seen_at"
+ | "seen.news.last_seen_at"
+ | "seen.suggestions.last_seen_at"
+ | "seen.page_changes.last_seen_at"
+ | "seen.activity.last_seen_at"
+ | "alerts.thresholds"
+ | "mention_digest_runner.last_run"
+ | "playbook_monitor_runner.last_run"
+ | "lost_link_runner.last_run"
+ | "outreach_reply_poll.last_run"
+ | "anomaly_runner.last_run"
+ | "title_test_runner.last_run"
+ | "google.gmail_scope_ok"
+ | "google.gmail_scope_checked_at"
+ | "api.pagespeed"
+ // Credit-saver mode: cap maxTokens, force terse system prompt, lower temp.
+ // ON keeps token use under ~500/answer for cheap providers like Gemini /
+ // Groq free tiers. OFF gives full-quality long-form answers (defaults OFF).
+ | "ai.credit_saver.enabled"
+ | "outreach.sender_name"
+ | "indexnow.key"
+ | "bing.api_key"
+ | "youtube.api_key"
+ // Browser pool — controls headless chromium concurrency + outbound proxies.
+ // proxies is a newline-separated list of "http://user:pass@host:port" or
+ // "host:port"; rotated round-robin per launched context. Empty = direct.
+ | "browser.max_concurrency"
+ | "browser.proxies"
+ | "browser.stealth_enabled"
+ // Remote browser endpoint. When set, all withBrowserContext calls use
+ // chromium.connect(<this WS endpoint>) instead of launching local
+ // Chrome. Lets self-hosters on tiny VPSes offload browser work to a
+ // managed service (Browserless, Cloudflare Browser Rendering, etc.).
+ | "browser.remote_ws"
+ // Lean-mode toggles — disable specific browser-dependent tools to
+ // free RAM on small boxes. Tool pages still render but show a
+ // "disabled in lean mode" notice and a link back to Settings.
+ | "browser.disable_rank_check"
+ | "browser.disable_local_cwv"
+ | "browser.disable_serp_scan"
+ | "browser.disable_gbp_scraper"
+ // Cookie jar for logged-in scraping. Stored as JSON array of
+ // { domain, name, value, path?, expires?, secure?, httpOnly? }.
+ | "browser.cookies"
+ // Monthly USD cap for AI calls. When set, calls past the cap return null
+ // (with a "cap reached" error), so a runaway workflow can't drain credits.
+ | "ai.monthly_cap_usd"
+ // Per-day brand list used by branded-vs-non-branded GSC splitter.
+ | "brand.match_terms"
+ // Weekly digest settings
+ | "digest.recipient_email"
+ | "digest.auto_send_enabled"
+ | "digest.last_sent_at"
+ | "digest.last_auto_run_at"
+ // First-run wizard gate. ISO timestamp written when the user clicks
+ // "Skip for now" on /welcome OR completes any meaningful step (adding
+ // a client / configuring an AI provider clears the fresh state
+ // naturally). Once set, the dashboard never redirects to /welcome again.
+ | "onboarding.dismissed_at"
+ // Opt-in browser-mode scrapers for AI search products that don't
+ // have public APIs (Google AI Mode via ?udm=50, Microsoft Copilot).
+ // Default OFF because these add ~15-20s per keyword per platform
+ // to an "AI visibility check all keywords" run — big impact on
+ // check-all latency. When ON, both providers get added to the
+ // check list alongside API-based providers.
+ | "ai_visibility.browser_scraped_enabled"
+ // Daily auto-backup. Default ON. The user can disable from /settings/backup
+ // if they prefer to manage backups externally (Restic / Borg / Time Machine).
+ | "autobackup.enabled"
+ | "autobackup.cadence_hours"
+ | "autobackup.retention"
+ | "autobackup.last_run_at"
+ | "autobackup.last_bytes"
+ | "autobackup.last_error"
+ // Retention / cleanup. Default ON. Periodically deletes screenshots,
+ // ai_calls, activity_log, and system_errors older than the
+ // configured age. Audits + audit_issues are NEVER touched
+ // (historical record). See src/lib/retention-cleanup.ts.
+ | "retention.enabled"
+ | "retention.cadence_hours"
+ | "retention.screenshots_days"
+ | "retention.ai_calls_days"
+ | "retention.activity_days"
+ | "retention.errors_days"
+ | "retention.last_run_at"
+ | "retention.last_summary"
+ | "retention.last_error";
 
 /**
  * True when the error is "the schema isn't there yet" rather than a
@@ -173,51 +184,93 @@ export type SettingKey =
  * would be much worse than failing loudly.
  */
 function isMissingSchemaError(err: unknown): boolean {
-  const msg = (err as Error)?.message ?? "";
-  return /no such table|no such column/i.test(msg);
+ const msg = (err as Error)?.message ?? "";
+ return /no such table|no such column/i.test(msg);
 }
 
 let warnedMissingSchema = false;
 
 export async function getSetting<T = unknown>(
-  key: SettingKey,
+ key: SettingKey,
 ): Promise<T | null> {
-  try {
-    const [row] = await db
-      .select()
-      .from(workspaceSettings)
-      .where(eq(workspaceSettings.key, key))
-      .limit(1);
-    return (row?.value as T | undefined) ?? null;
-  } catch (err) {
-    if (!isMissingSchemaError(err)) throw err;
-    // Warn once per process — a build prerendering 50 pages shouldn't
-    // print 50 identical warnings, but silence would hide a genuinely
-    // broken install.
-    if (!warnedMissingSchema) {
-      warnedMissingSchema = true;
-      console.warn(
-        "[settings] workspace_settings table is missing — reading defaults. " +
-          "Run `node scripts/migrate.cjs` (or `pnpm build`, which does it for you).",
-      );
-    }
-    return null;
+ try {
+  const [row] = await db
+   .select()
+   .from(workspaceSettings)
+   .where(eq(workspaceSettings.key, key))
+   .limit(1);
+  return (row?.value as T | undefined) ?? null;
+ } catch (err) {
+  if (!isMissingSchemaError(err)) throw err;
+  // Warn once per process — a build prerendering 50 pages shouldn't
+  // print 50 identical warnings, but silence would hide a genuinely
+  // broken install.
+  if (!warnedMissingSchema) {
+   warnedMissingSchema = true;
+   console.warn(
+    "[settings] workspace_settings table is missing — reading defaults. " +
+     "Run `node scripts/migrate.cjs` (or `pnpm build`, which does it for you).",
+   );
   }
+  return null;
+ }
 }
 
 export async function setSetting(
-  key: SettingKey,
-  value: unknown,
+ key: SettingKey,
+ value: unknown,
 ): Promise<void> {
-  await db
-    .insert(workspaceSettings)
-    .values({ key, value, updatedAt: new Date() })
-    .onConflictDoUpdate({
-      target: workspaceSettings.key,
-      set: { value, updatedAt: new Date() },
-    });
+ await db
+  .insert(workspaceSettings)
+  .values({ key, value, updatedAt: new Date() })
+  .onConflictDoUpdate({
+   target: workspaceSettings.key,
+   set: { value, updatedAt: new Date() },
+  });
 }
 
 export async function deleteSetting(key: SettingKey): Promise<void> {
-  await db.delete(workspaceSettings).where(eq(workspaceSettings.key, key));
+ await db.delete(workspaceSettings).where(eq(workspaceSettings.key, key));
+}
+
+// ── Custom OpenAI-compatible providers ────────────────────────────
+// Thin DB accessors over the `ai.custom_providers` row. All parsing /
+// validation lives in the pure lib/custom-providers.ts so it stays
+// unit-testable without a SQLite handle (see .agent/README vitest rule).
+
+/**
+ * Read the saved custom providers. Never throws on bad data —
+ * parseCustomProviders drops malformed entries and returns [] for a
+ * corrupt/unparseable row, so a hand-edited DB degrades to "no custom
+ * providers configured" instead of breaking every AI call.
+ */
+export async function getCustomProviders(): Promise<CustomProvider[]> {
+ const raw = await getSetting<unknown>(CUSTOM_PROVIDERS_SETTING_KEY);
+ const list = parseCustomProviders(raw);
+ // Seed the client-safe metadata cache in ai-model-presets on every
+ // read. All server-side readers (defaultModelFor, providerLabel,
+ // dispatch) go through this accessor, so the cache is always fresh
+ // by the time anything consumes it; client renders get their seed
+ // from listConfiguredProviders before the page ships.
+ seedCustomProviderMeta(list);
+ return list;
+}
+
+/** Look up one custom provider by id (`custom:<slug>`), or null. */
+export async function getCustomProvider(
+ id: string,
+): Promise<CustomProvider | null> {
+ const list = await getCustomProviders();
+ return list.find((p) => p.id === id) ?? null;
+}
+
+/**
+ * Persist the whole list (the list is small — a handful of entries —
+ * so read-modify-write of the full array is fine and keeps the stored
+ * shape trivially inspectable).
+ */
+export async function saveCustomProviders(
+ list: CustomProvider[],
+): Promise<void> {
+ await setSetting(CUSTOM_PROVIDERS_SETTING_KEY, list);
 }

@@ -92,7 +92,11 @@ describe("Gemini", () => {
   it("joins multiple parts, which is how longer replies arrive", async () => {
     respond({
       candidates: [
-        { content: { parts: [{ text: "Handmade Soap " }, { text: "for Sensitive Skin" }] } },
+        {
+          content: {
+            parts: [{ text: "Handmade Soap " }, { text: "for Sensitive Skin" }],
+          },
+        },
       ],
     });
     expect(await callGemini({ apiKey: "k", ...common })).toBe(REPLY);
@@ -161,7 +165,10 @@ describe("Anthropic", () => {
 });
 
 describe("OpenAI-compatible (Groq, OpenAI, OpenRouter, and six more)", () => {
-  const oc = { endpoint: "https://api.example.com/v1/chat/completions", apiKey: "k" };
+  const oc = {
+    endpoint: "https://api.example.com/v1/chat/completions",
+    apiKey: "k",
+  };
 
   it("reads choices[0].message.content", async () => {
     respond({ choices: [{ message: { role: "assistant", content: REPLY } }] });
@@ -197,6 +204,17 @@ describe("OpenAI-compatible (Groq, OpenAI, OpenRouter, and six more)", () => {
       extraHeaders: { "x-title": "SEO Tool" },
     });
     expect(sentHeaders()["x-title"]).toBe("SEO Tool");
+  });
+
+  it("omits the auth header entirely for a keyless custom endpoint", async () => {
+    // Local gateways (LM Studio, llama.cpp server) reject or ignore
+    // Bearer auth, and some 401 on an empty `Bearer ` value. A blank
+    // key must mean NO authorization header, not an empty one.
+    respond({ choices: [{ message: { content: REPLY } }] });
+    await callOpenAICompat({ ...oc, ...common, apiKey: "" });
+    const h = sentHeaders();
+    expect(h).not.toHaveProperty("authorization");
+    expect(h).not.toHaveProperty("Authorization");
   });
 });
 

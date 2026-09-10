@@ -26,7 +26,9 @@ export const clients = sqliteTable("clients", {
   address: text("address"),
   phone: text("phone"),
   email: text("email"),
-  socialLinks: text("social_links", { mode: "json" }).$type<ClientSocialLinks>(),
+  socialLinks: text("social_links", {
+    mode: "json",
+  }).$type<ClientSocialLinks>(),
   gbpUrl: text("gbp_url"),
   // Targeting — every recommendation, rank check, SERP scan, autocomplete
   // fan-out, and citation suggestion uses these. country defaults to "US"
@@ -37,8 +39,9 @@ export const clients = sqliteTable("clients", {
   /** City the business primarily serves. Required for niche=local. */
   city: text("city"),
   /** "country" | "city" | "multi" — how aggressively rank-tracker varies geo. */
-  geoTarget: text("geo_target", { enum: ["country", "city", "multi"] })
-    .default("country"),
+  geoTarget: text("geo_target", { enum: ["country", "city", "multi"] }).default(
+    "country",
+  ),
   /** Free-text — Google's category list is huge and changes; we let users type. */
   businessType: text("business_type"),
   /** Service-area radius in km when geoTarget = city. */
@@ -139,7 +142,9 @@ export const auditIssues = sqliteTable("audit_issues", {
   /** Top-level grouping (technical / on-page / content / E-E-A-T / etc). */
   category: text("category"),
   /** Whether this issue came from the AI audit runner vs the crawler. */
-  aiGenerated: integer("ai_generated", { mode: "boolean" }).notNull().default(false),
+  aiGenerated: integer("ai_generated", { mode: "boolean" })
+    .notNull()
+    .default(false),
   /** User-added sticky notes. */
   notes: text("notes"),
   /**
@@ -187,9 +192,12 @@ export const tasks = sqliteTable("tasks", {
     onDelete: "set null",
   }),
   /** Who actually finished it — the input /capacity and reports needed. */
-  completedByUserId: integer("completed_by_user_id").references(() => users.id, {
-    onDelete: "set null",
-  }),
+  completedByUserId: integer("completed_by_user_id").references(
+    () => users.id,
+    {
+      onDelete: "set null",
+    },
+  ),
   ...timestamps,
 });
 
@@ -225,25 +233,13 @@ export const aiVisibilityChecks = sqliteTable("ai_visibility_checks", {
   keywordId: integer("keyword_id")
     .notNull()
     .references(() => keywords.id, { onDelete: "cascade" }),
-  provider: text("provider", {
-    enum: [
-      "anthropic",
-      "openai",
-      "gemini",
-      "perplexity",
-      "openrouter",
-      "groq",
-      "ollama",
-      "mistral",
-      "deepseek",
-      "cerebras",
-      "together",
-      "github",
-      // Browser-scraped AI-search surfaces (no API key required):
-      "google_ai_mode",
-      "copilot",
-    ],
-  }).notNull(),
+  // Plain text (same as ai_usage_log.provider): values include Provider
+  // ids, browser-surface ids, AND user-registered `custom:<slug>` ids, so
+  // a static enum list would go stale the moment a user registers an
+  // endpoint. Drizzle's enum option is type-level only — the SQL column
+  // is unchanged — and display consumers already fall back to the raw
+  // value for unknown ids.
+  provider: text("provider").notNull(),
   prompt: text("prompt").notNull(),
   response: text("response").notNull(),
   citations: text("citations", { mode: "json" }).$type<string[]>(),
@@ -263,9 +259,7 @@ export const aiVisibilityChecks = sqliteTable("ai_visibility_checks", {
   mentionsDomain: integer("mentions_domain", { mode: "boolean" })
     .notNull()
     .default(false),
-  citationsForDomain: integer("citations_for_domain")
-    .notNull()
-    .default(0),
+  citationsForDomain: integer("citations_for_domain").notNull().default(0),
   error: text("error"),
   /**
    * Sentiment of the brand mention (null when no mention OR
@@ -444,7 +438,12 @@ export const cwvReports = sqliteTable("cwv_reports", {
   tbtMs: integer("tbt_ms"),
   /** PSI top opportunities, JSON list */
   opportunities: text("opportunities", { mode: "json" }).$type<
-    { id: string; title: string; savingsMs: number | null; description: string }[]
+    {
+      id: string;
+      title: string;
+      savingsMs: number | null;
+      description: string;
+    }[]
   >(),
   /** "PASS" | "NEEDS_IMPROVEMENT" | "FAIL" overall — derived */
   overall: text("overall", {
@@ -477,9 +476,7 @@ export const serpScans = sqliteTable("serp_scans", {
   /** People Also Ask questions in the SERP. */
   paaQuestions: text("paa_questions", { mode: "json" }).$type<string[]>(),
   /** Related searches at the bottom of the SERP. */
-  relatedSearches: text("related_searches", { mode: "json" }).$type<
-    string[]
-  >(),
+  relatedSearches: text("related_searches", { mode: "json" }).$type<string[]>(),
   /** Top organic results extracted from the page. */
   topResults: text("top_results", { mode: "json" }).$type<
     {
@@ -576,9 +573,7 @@ export const reportSchedules = sqliteTable("report_schedules", {
   dayOfWeek: integer("day_of_week").default(1),
   /** Local hour-of-day (0-23) when the runner sends the email. */
   hourOfDay: integer("hour_of_day").notNull().default(9),
-  recipients: text("recipients", { mode: "json" })
-    .$type<string[]>()
-    .notNull(),
+  recipients: text("recipients", { mode: "json" }).$type<string[]>().notNull(),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   lastSentAt: integer("last_sent_at", { mode: "timestamp" }),
   nextSendAt: integer("next_send_at", { mode: "timestamp" }),
@@ -1031,9 +1026,7 @@ export const competitorSnapshots = sqliteTable("competitor_snapshots", {
     { silo: string; count: number }[]
   >(),
   schemaTypes: text("schema_types", { mode: "json" }).$type<string[]>(),
-  backlinkDomains: text("backlink_domains", { mode: "json" }).$type<
-    string[]
-  >(),
+  backlinkDomains: text("backlink_domains", { mode: "json" }).$type<string[]>(),
   capturedAt: integer("captured_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
@@ -1193,7 +1186,8 @@ export type NewNewsItem = typeof newsItems.$inferInsert;
 export type BotLogUpload = typeof botLogUploads.$inferSelect;
 export type NewBotLogUpload = typeof botLogUploads.$inferInsert;
 export type GbpPlaybookCompletion = typeof gbpPlaybookCompletions.$inferSelect;
-export type NewGbpPlaybookCompletion = typeof gbpPlaybookCompletions.$inferInsert;
+export type NewGbpPlaybookCompletion =
+  typeof gbpPlaybookCompletions.$inferInsert;
 export type ShortLink = typeof shortLinks.$inferSelect;
 export type NewShortLink = typeof shortLinks.$inferInsert;
 export type ShortLinkClick = typeof shortLinkClicks.$inferSelect;
@@ -1457,35 +1451,40 @@ export type NewGuestPostDraft = typeof guestPostDrafts.$inferInsert;
  * Panel content for tracked clients. Diff between consecutive snapshots
  * surfaces changes (description, founder, sameAs, social profiles, image).
  */
-export const knowledgePanelSnapshots = sqliteTable("knowledge_panel_snapshots", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  clientId: integer("client_id")
-    .notNull()
-    .references(() => clients.id, { onDelete: "cascade" }),
-  /** Brand query that surfaced the panel ("Acme Inc"). */
-  query: text("query").notNull(),
-  /** Whether a Knowledge Panel was present at this scan. */
-  present: integer("present", { mode: "boolean" }).notNull().default(false),
-  title: text("title"),
-  subtitle: text("subtitle"),
-  description: text("description"),
-  imageUrl: text("image_url"),
-  /** Wikipedia / Crunchbase / etc. — entity sameAs links. */
-  sameAs: text("same_as", { mode: "json" }).$type<string[]>(),
-  /** Free-text social URLs Google shows in the panel. */
-  socials: text("socials", { mode: "json" }).$type<string[]>(),
-  /** Any factual rows shown (founder, headquarters, etc). */
-  facts: text("facts", { mode: "json" }).$type<
-    { label: string; value: string }[]
-  >(),
-  /** Raw HTML excerpt for forensics. Limited to ~32KB. */
-  rawHtml: text("raw_html"),
-  capturedAt: integer("captured_at", { mode: "timestamp" })
-    .notNull()
-    .default(sql`(unixepoch())`),
-});
-export type KnowledgePanelSnapshot = typeof knowledgePanelSnapshots.$inferSelect;
-export type NewKnowledgePanelSnapshot = typeof knowledgePanelSnapshots.$inferInsert;
+export const knowledgePanelSnapshots = sqliteTable(
+  "knowledge_panel_snapshots",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    clientId: integer("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    /** Brand query that surfaced the panel ("Acme Inc"). */
+    query: text("query").notNull(),
+    /** Whether a Knowledge Panel was present at this scan. */
+    present: integer("present", { mode: "boolean" }).notNull().default(false),
+    title: text("title"),
+    subtitle: text("subtitle"),
+    description: text("description"),
+    imageUrl: text("image_url"),
+    /** Wikipedia / Crunchbase / etc. — entity sameAs links. */
+    sameAs: text("same_as", { mode: "json" }).$type<string[]>(),
+    /** Free-text social URLs Google shows in the panel. */
+    socials: text("socials", { mode: "json" }).$type<string[]>(),
+    /** Any factual rows shown (founder, headquarters, etc). */
+    facts: text("facts", { mode: "json" }).$type<
+      { label: string; value: string }[]
+    >(),
+    /** Raw HTML excerpt for forensics. Limited to ~32KB. */
+    rawHtml: text("raw_html"),
+    capturedAt: integer("captured_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+);
+export type KnowledgePanelSnapshot =
+  typeof knowledgePanelSnapshots.$inferSelect;
+export type NewKnowledgePanelSnapshot =
+  typeof knowledgePanelSnapshots.$inferInsert;
 
 /**
  * Author topic-authority tracking. We periodically scan competitors' /author/
@@ -1525,7 +1524,8 @@ export const authorAuthorityRecords = sqliteTable("author_authority_records", {
     .default(sql`(unixepoch())`),
 });
 export type AuthorAuthorityRecord = typeof authorAuthorityRecords.$inferSelect;
-export type NewAuthorAuthorityRecord = typeof authorAuthorityRecords.$inferInsert;
+export type NewAuthorAuthorityRecord =
+  typeof authorAuthorityRecords.$inferInsert;
 
 /**
  * Generic tool-run persistence.
@@ -1551,7 +1551,9 @@ export const toolRuns = sqliteTable("tool_runs", {
   /** Short human label so list views are readable without parsing JSON. */
   label: text("label").notNull(),
   /** The raw input the user submitted (URL, query, etc.) for re-running. */
-  inputJson: text("input_json", { mode: "json" }).$type<Record<string, unknown>>(),
+  inputJson: text("input_json", { mode: "json" }).$type<
+    Record<string, unknown>
+  >(),
   /** The full structured output. Tools deserialize their own shape. */
   resultJson: text("result_json", { mode: "json" }).$type<unknown>(),
   /** User-pinned runs survive bulk-clear. */
@@ -1575,45 +1577,42 @@ export type NewToolRun = typeof toolRuns.$inferInsert;
  * audit / schema check / etc. — the checklist UX is built once and every
  * tool gets it for free.
  */
-export const toolFindings = sqliteTable(
-  "tool_findings",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    runId: integer("run_id")
-      .notNull()
-      .references(() => toolRuns.id, { onDelete: "cascade" }),
-    clientId: integer("client_id").references(() => clients.id, {
-      onDelete: "cascade",
-    }),
-    toolId: text("tool_id").notNull(),
-    /** Stable identifier within a tool ("sxo.page_promise.no_h1" etc.).
+export const toolFindings = sqliteTable("tool_findings", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  runId: integer("run_id")
+    .notNull()
+    .references(() => toolRuns.id, { onDelete: "cascade" }),
+  clientId: integer("client_id").references(() => clients.id, {
+    onDelete: "cascade",
+  }),
+  toolId: text("tool_id").notNull(),
+  /** Stable identifier within a tool ("sxo.page_promise.no_h1" etc.).
         Re-check uses this to match findings across runs. */
-    signature: text("signature").notNull(),
-    title: text("title").notNull(),
-    category: text("category"),
-    severity: text("severity", {
-      enum: ["critical", "high", "medium", "low", "pass"],
-    })
-      .notNull()
-      .default("medium"),
-    details: text("details"),
-    fixSteps: text("fix_steps"),
-    codeSnippet: text("code_snippet"),
-    status: text("status", {
-      enum: ["new", "in_progress", "resolved", "ignored"],
-    })
-      .notNull()
-      .default("new"),
-    completedAt: integer("completed_at", { mode: "timestamp" }),
-    completedNote: text("completed_note"),
-    createdAt: integer("created_at", { mode: "timestamp" })
-      .notNull()
-      .default(sql`(unixepoch())`),
-    updatedAt: integer("updated_at", { mode: "timestamp" })
-      .notNull()
-      .default(sql`(unixepoch())`),
-  },
-);
+  signature: text("signature").notNull(),
+  title: text("title").notNull(),
+  category: text("category"),
+  severity: text("severity", {
+    enum: ["critical", "high", "medium", "low", "pass"],
+  })
+    .notNull()
+    .default("medium"),
+  details: text("details"),
+  fixSteps: text("fix_steps"),
+  codeSnippet: text("code_snippet"),
+  status: text("status", {
+    enum: ["new", "in_progress", "resolved", "ignored"],
+  })
+    .notNull()
+    .default("new"),
+  completedAt: integer("completed_at", { mode: "timestamp" }),
+  completedNote: text("completed_note"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+});
 export type ToolFinding = typeof toolFindings.$inferSelect;
 export type NewToolFinding = typeof toolFindings.$inferInsert;
 
@@ -1916,7 +1915,6 @@ export const publishQueue = sqliteTable("publish_queue", {
 });
 export type PublishQueueItem = typeof publishQueue.$inferSelect;
 export type NewPublishQueueItem = typeof publishQueue.$inferInsert;
-
 
 /**
  * Accounts. Opt-in: an install with zero rows here keeps the original

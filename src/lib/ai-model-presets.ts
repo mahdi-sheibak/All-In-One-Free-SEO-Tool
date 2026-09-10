@@ -32,7 +32,13 @@
  * `null` means "free tier / local / no per-token charge".
  */
 
-import type { ActiveProvider } from "./api-keys";
+import {
+  customProviderSlug,
+  isCustomProvider,
+  type ActiveProvider,
+  type CustomProviderId,
+  type StaticProviderId,
+} from "./api-providers";
 
 export type ModelPreset = {
   /** Model id sent to the provider's API. */
@@ -57,7 +63,7 @@ export type ModelPreset = {
  * default is always the one that keeps a free-tier user inside their
  * quota.
  */
-export const MODEL_PRESETS: Record<ActiveProvider, ModelPreset[]> = {
+export const MODEL_PRESETS: Record<StaticProviderId, ModelPreset[]> = {
   gemini: [
     {
       id: "gemini-2.0-flash",
@@ -338,10 +344,58 @@ export function presetFor(modelId: string): ModelPreset | undefined {
  * never disagree again.
  */
 export function defaultModelFor(provider: ActiveProvider): string {
+  // Custom providers have no static preset — their model id lives in
+  // the `ai.custom_providers` settings row and is seeded into the
+  // module-level table below by the DB accessors (settings-store) and
+  // by listConfiguredProviders for client renders. Unseeded ⇒ "" and
+  // provider-dispatch resolves the model server-side instead.
+  if (isCustomProvider(provider)) return customModelFor(provider);
   return MODEL_PRESETS[provider]?.[0]?.id ?? "";
 }
 
-export const PROVIDER_LABEL: Record<ActiveProvider, string> = {
+// ── Runtime metadata for custom providers ────────────────────────
+// Custom provider ids are user-generated, so they can't be keys of the
+// static maps above. Their label + model are cached here, seeded after
+// every read of the settings row. This keeps this file CLIENT-SAFE:
+// no settings-store/db import — client components just see whatever the
+// most recent server-side seed left behind (populated before render by
+// the page server component / server actions that fetched the list).
+
+const customMeta = new Map<string, { label: string; model: string }>();
+
+/**
+ * Replace the cached custom-provider metadata. Called by
+ * settings-store.getCustomProviders() (so every server-side reader sees
+ * fresh data) and by listConfiguredProviders() (so the client picker is
+ * seeded before it renders).
+ */
+export function seedCustomProviderMeta(
+  entries: { id: string; label: string; model: string }[],
+): void {
+  customMeta.clear();
+  for (const e of entries) {
+    customMeta.set(e.id, { label: e.label, model: e.model });
+  }
+}
+
+/** Seeded model id for a custom provider, or "" when unknown. */
+export function customModelFor(provider: CustomProviderId): string {
+  return customMeta.get(provider)?.model ?? "";
+}
+
+/**
+ * Display label for any active provider id. Built-ins come from the
+ * static map; customs use the seeded user-chosen label, falling back to
+ * the id's slug ("custom:lm-studio" → "lm-studio") when unseeded.
+ */
+export function providerLabel(provider: ActiveProvider): string {
+  if (!isCustomProvider(provider)) return PROVIDER_LABEL[provider];
+  return (
+    customMeta.get(provider)?.label || customProviderSlug(provider) || "Custom"
+  );
+}
+
+export const PROVIDER_LABEL: Record<StaticProviderId, string> = {
   gemini: "Google Gemini",
   groq: "Groq",
   anthropic: "Anthropic",

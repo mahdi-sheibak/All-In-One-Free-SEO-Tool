@@ -28,6 +28,8 @@
 import type { ActiveProvider, Provider } from "./api-keys";
 import { getApiKey, getOllamaUrl } from "./api-keys";
 import { defaultModelFor } from "./ai-model-presets";
+import { isCustomProvider, type StaticProviderId } from "./api-providers";
+import { getCustomProvider } from "./settings-store";
 import { NO_KEY_STATUS, NO_OLLAMA_URL_STATUS } from "./ai-error";
 import { callGemini as sharedCallGemini } from "./providers/gemini";
 import { callAnthropic as sharedCallAnthropic } from "./providers/anthropic";
@@ -47,9 +49,59 @@ export type ProviderSpec = {
   endpoint?: string;
   /** Extra request headers. OpenRouter uses this for the required x-title. */
   extraHeaders?: Record<string, string>;
+  /**
+   * Custom providers only: the stored free-text model id. Lets dispatch
+   * send the right model even when the runtime metadata seed in
+   * ai-model-presets was never populated (long-running workers, tests).
+   */
+  model?: string;
+  /**
+   * Custom providers only: the already-resolved API key. "" means a
+   * keyless local endpoint (LM Studio, llama.cpp) — legitimate, and
+   * openai-compat omits the Bearer header entirely for those.
+   */
+  apiKey?: string;
+  /** True when this spec came from the ai.custom_providers settings row. */
+  custom?: boolean;
 };
 
-export const PROVIDER_DISPATCH: Record<ActiveProvider, ProviderSpec> = {
+/**
+ * Resolve the wire-spec for ANY dispatchable provider id — built-ins
+ * from the static table above, user-registered custom providers
+ * (`custom:<slug>`) from the `ai.custom_providers` settings row.
+ *
+ * Custom specs carry their stored `model` too, so dispatch stays
+ * self-sufficient even when the runtime metadata seed in
+ * ai-model-presets was never populated (long-running workers, tests).
+ * Returns null for unknown/unsaved ids — callers treat that as
+ * "not configured", never as a hard error.
+ */
+export async function resolveProviderSpec(
+  providerId: ActiveProvider,
+): Promise<ProviderSpec | null> {
+  if (!isCustomProvider(providerId)) {
+    return PROVIDER_DISPATCH[providerId] ?? null;
+  }
+  const cp = await getCustomProvider(providerId);
+  if (!cp) return null;
+  // getApiKey already covers every key state for customs: saved with a
+  // stored key → decrypted, keyless → "" (unsaved ids never reach this
+  // line because cp exists). A plain const keeps no await inside a
+  // member initializer.
+  const apiKey = (await getApiKey(providerId)) ?? "";
+  return {
+    id: cp.id,
+    kind: "openai-compat",
+    endpoint: `${cp.baseUrl}/chat/completions`,
+    // Free-text model from the settings row — a custom spec with no
+    // model would send `model: ""`, which every gateway 400s on.
+    model: cp.model,
+    apiKey,
+    custom: true,
+  };
+}
+
+export const PROVIDER_DISPATCH: Record<StaticProviderId, ProviderSpec> = {
   gemini: {
     id: "gemini",
     kind: "gemini",
@@ -120,6 +172,15 @@ export type DispatchArgs = {
   /** For logging / error attribution. Passed through to the shared callers. */
   caller?: string;
   /**
+   * Multi-turn conversation history (assistant chat). When present,
+   * the message-capable branches send history INSTEAD OF the lone
+   * `user` turn — `user` still names the final user message for the
+   * branches that stay single-turn (Ollama's direct helper). Roles
+   * map 1:1 onto every shared caller's message type, so the assistant
+   * forwards its transcript verbatim.
+   */
+  history?: { role: "user" | "assistant"; content: string }[];
+  /**
    * Receives the provider's status + body when a call fails, so the
    * caller can tell the user WHY rather than rendering an empty box.
    * See ai-error.ts for how these become user-facing sentences.
@@ -144,11 +205,22 @@ export async function dispatchProviderCall(
   providerId: ActiveProvider,
   args: DispatchArgs,
 ): Promise<string | null> {
-  const spec = PROVIDER_DISPATCH[providerId];
+  // Custom providers resolve DYNAMICALLY from the settings row — the
+  // static table only knows the 12 built-ins.
+  const spec = await resolveProviderSpec(providerId);
   if (!spec) return null;
 
-  const model = args.model?.trim() || defaultModelFor(providerId);
+  // Precedence: per-call override → the custom spec's stored model →
+  // the catalog default ("" for customs with no stored model yet —
+  // the model picker persists one on first use).
+  const model = args.model?.trim() || spec.model || defaultModelFor(providerId);
   const caller = args.caller ?? "provider-dispatch";
+  // Multi-turn transcript when a caller (assistant chat) supplies one;
+  // every other caller keeps the lone user turn. The neutral
+  // {role, content} shape is structurally assignable to all three
+  // shared callers' message unions (their text-member is exactly this).
+  const transcript: { role: "user" | "assistant"; content: string }[] =
+    args.history ?? [{ role: "user", content: args.user }];
 
   switch (spec.kind) {
     case "gemini": {
@@ -161,7 +233,7 @@ export async function dispatchProviderCall(
         apiKey,
         model,
         system: args.system,
-        messages: [{ role: "user", content: args.user }],
+        messages: transcript,
         maxTokens: args.maxTokens,
         temperature: args.temperature,
         timeoutMs: args.timeoutMs,
@@ -179,7 +251,7 @@ export async function dispatchProviderCall(
         apiKey,
         model,
         system: args.system,
-        messages: [{ role: "user", content: args.user }],
+        messages: transcript,
         maxTokens: args.maxTokens,
         temperature: args.temperature,
         timeoutMs: args.timeoutMs,
@@ -189,6 +261,27 @@ export async function dispatchProviderCall(
     }
     case "openai-compat": {
       if (!spec.endpoint) return null;
+      // CUSTOM PROVIDERS: the spec already carries endpoint + model +
+      // (possibly empty) key from the settings row — resolveProviderSpec
+      // fetched and decrypted everything in one read. Keyless local
+      // endpoints (LM Studio, llama.cpp, keyless vLLM) are legitimate:
+      // only catalog providers require a key (NO_KEY sentinel below).
+      if (spec.custom) {
+        return sharedCallOpenAICompat({
+          endpoint: spec.endpoint,
+          // "" key = keyless endpoint — openai-compat omits the
+          // Bearer header entirely for those.
+          apiKey: spec.apiKey ?? "",
+          model,
+          system: args.system,
+          messages: transcript,
+          maxTokens: args.maxTokens,
+          temperature: args.temperature,
+          timeoutMs: args.timeoutMs,
+          caller,
+          onFailure: args.onFailure,
+        });
+      }
       const apiKey = await getApiKey(providerId as Provider);
       if (!apiKey) {
         args.onFailure?.(NO_KEY_STATUS, "no api key configured");
@@ -199,7 +292,7 @@ export async function dispatchProviderCall(
         apiKey,
         model,
         system: args.system,
-        messages: [{ role: "user", content: args.user }],
+        messages: transcript,
         maxTokens: args.maxTokens,
         temperature: args.temperature,
         timeoutMs: args.timeoutMs,
@@ -282,6 +375,25 @@ async function callOllamaDirect(args: {
   } finally {
     clearTimeout(t);
   }
+}
+
+/**
+ * Default model for ANY dispatchable provider: the catalog default for
+ * built-ins, the stored free-text model for customs ("" when none has
+ * been saved yet — dispatch falls back and the model picker persists
+ * one on first use). Use this instead of defaultModelFor anywhere the
+ * provider id can be custom. As a side effect it seeds the runtime
+ * metadata cache via getCustomProvider, so providerLabel() renders the
+ * human label afterwards.
+ */
+export async function resolveDefaultModel(
+  providerId: ActiveProvider,
+): Promise<string> {
+  if (isCustomProvider(providerId)) {
+    const cp = await getCustomProvider(providerId);
+    return cp?.model ?? "";
+  }
+  return defaultModelFor(providerId);
 }
 
 /**

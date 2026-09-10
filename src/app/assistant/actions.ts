@@ -2,9 +2,8 @@
 
 import { desc, eq, ne, count } from "drizzle-orm";
 import { db } from "@/db/client";
-import { callGemini as sharedCallGemini } from "@/lib/providers/gemini";
-import { callAnthropic as sharedCallAnthropic } from "@/lib/providers/anthropic";
-import { callOpenAICompat as sharedCallOpenAICompat } from "@/lib/providers/openai-compat";
+import { dispatchProviderCall } from "@/lib/provider-dispatch";
+import { providerLabel } from "@/lib/ai-model-presets";
 import {
   audits,
   auditIssues,
@@ -193,94 +192,13 @@ async function loadContext(): Promise<string> {
 
 const MAX_CONTEXT_CHARS = 8_000;
 
-// All four OpenAI-compat providers + Anthropic share one helper each.
-// SYSTEM_PROMPT + context is built once and passed as the `system` field.
+// SYSTEM_PROMPT + context is built once and passed as the `system`
+// field. Per-provider call helpers are gone — chat() goes through
+// dispatchProviderCall, which owns endpoint/key/model resolution for
+// every dispatchable id (built-ins, ollama, custom:*).
 
 function buildSystem(context: string): string {
   return `${SYSTEM_PROMPT}\n\n<context>\n${context.slice(0, MAX_CONTEXT_CHARS)}\n</context>`;
-}
-
-async function callAnthropic(
-  apiKey: string,
-  context: string,
-  history: ChatMessage[],
-): Promise<string | null> {
-  return sharedCallAnthropic({
-    apiKey,
-    system: buildSystem(context),
-    messages: history,
-    maxTokens: 800,
-    temperature: 0.3,
-    timeoutMs: 30_000,
-    caller: "assistant",
-  });
-}
-
-async function callOpenAI(
-  apiKey: string,
-  context: string,
-  history: ChatMessage[],
-): Promise<string | null> {
-  return sharedCallOpenAICompat({
-    endpoint: "https://api.openai.com/v1/chat/completions",
-    apiKey,
-    model: "gpt-4o-mini",
-    system: buildSystem(context),
-    messages: history,
-    maxTokens: 800,
-    temperature: 0.3,
-    timeoutMs: 30_000,
-    caller: "assistant",
-  });
-}
-
-async function callOllama(
-  baseUrl: string,
-  context: string,
-  history: ChatMessage[],
-): Promise<string | null> {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), 60_000);
-  try {
-    const models = ["llama3.2", "llama3.1", "mistral", "phi3"];
-    for (const model of models) {
-      try {
-        const res = await fetch(`${baseUrl}/api/chat`, {
-          method: "POST",
-          signal: c.signal,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            model,
-            stream: false,
-            messages: [
-              {
-                role: "system",
-                content: `${SYSTEM_PROMPT}\n\n<context>\n${context.slice(0, MAX_CONTEXT_CHARS)}\n</context>`,
-              },
-              ...history.map((m) => ({
-                role: m.role,
-                content: m.content,
-              })),
-            ],
-          }),
-        });
-        if (res.ok) {
-          const data = (await res.json()) as {
-            message?: { content?: string };
-          };
-          const text = data.message?.content?.trim();
-          if (text && text.length > 0) return text;
-        }
-      } catch {
-        /* try next model */
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(t);
-  }
 }
 
 export async function chat(history: ChatMessage[]): Promise<ChatResult> {
@@ -289,9 +207,7 @@ export async function chat(history: ChatMessage[]): Promise<ChatResult> {
   }
 
   const context = await loadContext();
-  const { getActiveProvider, getApiKey, getOllamaUrl } = await import(
-    "@/lib/api-keys"
-  );
+  const { getActiveProvider } = await import("@/lib/api-keys");
 
   const active = await getActiveProvider();
   if (!active) {
@@ -302,101 +218,27 @@ export async function chat(history: ChatMessage[]): Promise<ChatResult> {
     };
   }
 
-  try {
-    if (active === "gemini") {
-      const k = await getApiKey("gemini");
-      if (k) {
-        const r = await callGemini(k, context, history);
-        if (r) return { ok: true, reply: r, provider: "Gemini" };
-      }
-    } else if (active === "groq") {
-      const k = await getApiKey("groq");
-      if (k) {
-        const r = await callGroq(k, context, history);
-        if (r) return { ok: true, reply: r, provider: "Groq" };
-      }
-    } else if (active === "anthropic") {
-      const k = await getApiKey("anthropic");
-      if (k) {
-        const r = await callAnthropic(k, context, history);
-        if (r) return { ok: true, reply: r, provider: "Anthropic" };
-      }
-    } else if (active === "openai") {
-      const k = await getApiKey("openai");
-      if (k) {
-        const r = await callOpenAI(k, context, history);
-        if (r) return { ok: true, reply: r, provider: "OpenAI" };
-      }
-    } else if (active === "openrouter") {
-      const k = await getApiKey("openrouter");
-      if (k) {
-        const r = await callOpenRouter(k, context, history);
-        if (r) return { ok: true, reply: r, provider: "OpenRouter" };
-      }
-    } else if (active === "ollama") {
-      const url = await getOllamaUrl();
-      const r = await callOllama(url, context, history);
-      if (r) return { ok: true, reply: r, provider: "Ollama (local)" };
-    }
-  } catch {
-    /* fall through */
-  }
+  // Single dispatch call replaces the old per-provider chain, which
+  // silently returned "didn't respond" for every provider added after
+  // OpenRouter (mistral, deepseek, cerebras, together, github) and had
+  // no path to custom endpoints at all. dispatchProviderCall owns key
+  // resolution, wire protocol, and model fallback for ALL ids —
+  // built-ins, ollama, and custom:<slug> alike.
+  const reply = await dispatchProviderCall(active, {
+    system: buildSystem(context),
+    user: history[history.length - 1].content,
+    history,
+    maxTokens: 800,
+    temperature: 0.3,
+    timeoutMs: 30_000,
+    caller: "assistant",
+  });
 
+  if (reply) {
+    return { ok: true, reply, provider: providerLabel(active) };
+  }
   return {
     ok: false,
-    error: `Active provider "${active}" didn't respond. Check the key in Settings or pick a different provider as active.`,
+    error: `Active provider "${providerLabel(active)}" didn't respond. Check the key in Settings or pick a different provider as active.`,
   };
-}
-
-async function callGemini(
-  apiKey: string,
-  context: string,
-  history: ChatMessage[],
-): Promise<string | null> {
-  return sharedCallGemini({
-    apiKey,
-    system: `${SYSTEM_PROMPT}\n\n<context>\n${context.slice(0, MAX_CONTEXT_CHARS)}\n</context>`,
-    messages: history,
-    maxTokens: 800,
-    temperature: 0.3,
-    timeoutMs: 30_000,
-    caller: "assistant",
-  });
-}
-
-async function callGroq(
-  apiKey: string,
-  context: string,
-  history: ChatMessage[],
-): Promise<string | null> {
-  return sharedCallOpenAICompat({
-    endpoint: "https://api.groq.com/openai/v1/chat/completions",
-    apiKey,
-    model: "llama-3.3-70b-versatile",
-    system: buildSystem(context),
-    messages: history,
-    maxTokens: 800,
-    temperature: 0.3,
-    timeoutMs: 30_000,
-    caller: "assistant",
-  });
-}
-
-async function callOpenRouter(
-  apiKey: string,
-  context: string,
-  history: ChatMessage[],
-): Promise<string | null> {
-  return sharedCallOpenAICompat({
-    endpoint: "https://openrouter.ai/api/v1/chat/completions",
-    apiKey,
-    model: "meta-llama/llama-3.3-70b-instruct:free",
-    system: buildSystem(context),
-    messages: history,
-    maxTokens: 800,
-    temperature: 0.3,
-    timeoutMs: 30_000,
-    extraHeaders: { "x-title": "SEO Tool" },
-    caller: "assistant",
-  });
 }
